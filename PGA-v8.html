@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PGA Tour 2K25 Distance Calculator (v8 Auto)</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#131a22; --ink:#e6edf3; --muted:#9fb1c1; --accent:#49a1ff; --good:#3ecf8e; --bad:#ff6b6b; --warn:#f0b429; }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:16px 20px;border-bottom:1px solid #1d2733;background:linear-gradient(180deg,#0f1520,#0b0f14);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+  h1{font-size:18px;font-weight:700;letter-spacing:.2px}
+  .version{font-size:11px;color:var(--muted);background:#0f1620;border:1px solid #273445;padding:3px 8px;border-radius:999px}
+  main{max-width:1200px;margin:16px auto;padding:0 12px;display:grid;gap:14px;grid-template-columns:1.1fr .9fr}
+  .card{background:var(--panel);border:1px solid #1d2733;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:14px 16px}
+  .card h2{margin:0 0 10px;font-size:15px;font-weight:700;color:var(--accent)}
+  .sub{font-size:11px;color:var(--muted);margin-bottom:6px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px}
+  label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:500}
+  input,select{width:100%;padding:8px 10px;background:#0f1620;border:1px solid #273445;border-radius:8px;color:var(--ink);outline:none;font-size:13px}
+  input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(73,161,255,.15)}
+  .hint{font-size:10px;color:var(--muted);margin-top:3px}
+  .pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#0f1620;border:1px solid #273445;color:var(--muted);font-size:11px;margin:2px 4px 2px 0}
+  .pill.good{border-color:var(--good);color:var(--good)}
+  .pill.bad{border-color:var(--bad);color:var(--bad)}
+  .pill.warn{border-color:var(--warn);color:var(--warn)}
+  .big{font-size:30px;font-weight:800;letter-spacing:-0.02em}
+  .big.green{color:var(--good)}
+  .big.red{color:var(--bad)}
+  .kpi{padding:8px 10px;border-radius:10px;background:#0e151e;border:1px solid #203040}
+  .kpi .label{font-size:10px;color:var(--muted)}
+  .kpi .value{font-size:16px;font-weight:700}
+  .kpi .value.pos{color:var(--good)}
+  .kpi .value.neg{color:var(--bad)}
+  .btn{cursor:pointer;user-select:none;border:none;border-radius:8px;background:var(--accent);color:#04101e;padding:8px 14px;font-weight:700;font-size:13px}
+  .btn.secondary{background:#0f1620;color:var(--ink);border:1px solid #273445}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px}
+  .tabs{display:flex;gap:4px;margin-bottom:10px}
+  .tab{padding:6px 12px;border-radius:8px;background:#0f1620;border:1px solid #273445;color:var(--muted);cursor:pointer;font-size:12px;font-weight:600}
+  .tab.active{background:var(--accent);color:#04101e;border-color:var(--accent)}
+  .tab:hover:not(.active){border-color:var(--accent);color:var(--ink)}
+  .panel{display:none}
+  .panel.active{display:block}
+  .ref-table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}
+  .ref-table th{text-align:left;padding:4px 6px;background:#0d1319;color:var(--accent);font-weight:600;border-bottom:1px solid #273445}
+  .ref-table td{padding:3px 6px;border-bottom:1px solid #1a2332}
+  .note{font-size:10px;color:var(--muted);padding:6px 8px;background:#0d1319;border-radius:8px;border-left:3px solid var(--warn);margin-top:8px;line-height:1.4}
+  hr.divider{border:none;border-top:1px solid #243240;margin:12px 0}
+  @media (max-width: 800px){ main{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+  <header>
+    <h1>⛳ PGA Tour 2K25 — Master Distance Calculator</h1>
+    <span class="version">v8 Auto — Master Difficulty</span>
+  </header>
+  <main>
+    <!-- LEFT COLUMN: INPUTS -->
+    <div>
+      <section class="card">
+        <h2>📡 Shot Setup</h2>
+        <div class="row">
+          <div>
+            <label for="yardage">Yardage to pin (yards)</label>
+            <input id="yardage" type="number" inputmode="decimal" value="150" step="1">
+          </div>
+          <div>
+            <label for="elevation">Elevation (feet)</label>
+            <input id="elevation" type="number" inputmode="decimal" value="0" step="1">
+            <div class="hint">Positive = uphill, Negative = downhill</div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="windSpeed">Wind speed (mph)</label>
+            <input id="windSpeed" type="number" inputmode="decimal" value="10" step="1">
+          </div>
+          <div>
+            <label for="windAngle">Wind angle (0°=head/tail, 90°=pure cross)</label>
+            <input id="windAngle" type="number" inputmode="decimal" value="0" min="0" max="90" step="1">
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="windDir">Head/tail direction</label>
+            <select id="windDir">
+              <option value="hurting" selected>Hurting (headwind)</option>
+              <option value="helping">Helping (tailwind)</option>
+            </select>
+          </div>
+          <div>
+            <label for="sideDir">Cross direction</label>
+            <select id="sideDir">
+              <option value="LtoR">Left → Right</option>
+              <option value="RtoL">Right → Left</option>
+            </select>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <h2>🏌️ Club & Shot</h2>
+        <div class="row">
+          <div>
+            <label for="clubSelect">Club</label>
+            <select id="clubSelect">
+              <option value="auto" selected>⚡ Auto (from yardage)</option>
+              <optgroup label="Woods">
+                <option value="driver">Driver (315y)</option>
+                <option value="3wood">3 Wood (265y)</option>
+                <option value="5wood">5 Wood (252y)</option>
+              </optgroup>
+              <optgroup label="Irons">
+                <option value="4iron">4 Iron (225y)</option>
+                <option value="5iron">5 Iron (214y)</option>
+                <option value="6iron">6 Iron (204y)</option>
+                <option value="7iron">7 Iron (188y)</option>
+                <option value="8iron">8 Iron (176y)</option>
+                <option value="9iron">9 Iron (166y)</option>
+              </optgroup>
+              <optgroup label="Wedges">
+                <option value="pw">PW (147y)</option>
+                <option value="50deg">50° (126y)</option>
+                <option value="56deg">56° (108y)</option>
+                <option value="60deg">60° (99y)</option>
+              </optgroup>
+            </select>
+            <div class="hint" id="clubHint">⚡ Auto picks best club. Or select manually.</div>
+          </div>
+          <div>
+            <label for="rollout">Base rollout (yards)</label>
+            <input id="rollout" type="number" inputmode="decimal" value="7" step="0.5">
+            <div class="hint">Auto-sets by club type. Edit for your specs.</div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="shotType">Shot type</label>
+            <select id="shotType">
+              <option value="full" selected>Full Shot</option>
+              <option value="punch">Punch</option>
+              <option value="pitch">Pitch</option>
+              <option value="flop">Flop</option>
+              <option value="chip">Chip</option>
+            </select>
+            <div class="hint">Trajectory height affects wind</div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <div>
+            <label for="lieSelect">Lie condition</label>
+            <select id="lieSelect">
+              <option value="fairway" selected>Fairway</option>
+              <option value="lightRough">Light Rough</option>
+              <option value="heavyRough">Heavy Rough</option>
+              <option value="fwBunker">Fairway Bunker</option>
+              <option value="gsBunker">Greenside Bunker</option>
+              <option value="downhill">Downhill Lie</option>
+              <option value="uphill">Uphill Lie</option>
+            </select>
+          </div>
+          <div>
+            <label for="spinType">Spin type</label>
+            <select id="spinType">
+              <option value="backspin" selected>Backspin</option>
+              <option value="nospin">No Spin</option>
+              <option value="topspin">Topspin</option>
+            </select>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <h2>🌿 Conditions</h2>
+        <div class="row">
+          <div>
+            <label for="firmness">Green firmness</label>
+            <select id="firmness">
+              <option value="soft">Soft</option>
+              <option value="medium" selected>Medium</option>
+              <option value="firm">Firm</option>
+              <option value="veryFirm">Very Firm</option>
+            </select>
+          </div>
+          <div>
+            <label for="playerShape">My shot shape</label>
+            <select id="playerShape">
+              <option value="fade" selected>Fade (L→R)</option>
+              <option value="draw">Draw (R→L)</option>
+              <option value="straight">Straight</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-top:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+          <button class="btn" id="calcBtn">Calculate</button>
+          <button class="btn secondary" id="resetBtn">Reset</button>
+          <span class="pill" id="windStrDisplay">Wind Strength: 100%</span>
+          <span class="pill" id="liePenDisplay">Lie: 0%</span>
+        </div>
+      </section>
+
+      <!-- REFERENCE TABS -->
+      <section class="card" style="margin-top:14px">
+        <h2>📋 Reference</h2>
+        <div class="tabs">
+          <div class="tab active" data-tab="distances">Club Distances</div>
+          <div class="tab" data-tab="masterNotes">Master Tips</div>
+          <div class="tab" data-tab="formulas">Formulas</div>
+        </div>
+
+        <div class="panel active" id="panel-distances">
+          <table class="ref-table">
+            <tr><th>Club</th><th>Carry</th><th>Roll*</th><th>Total</th><th>Gap</th></tr>
+            <tr><td>Driver</td><td>315</td><td>22</td><td>337</td><td>—</td></tr>
+            <tr><td>3W</td><td>265</td><td>16</td><td>281</td><td>56</td></tr>
+            <tr><td>5W</td><td>252</td><td>14</td><td>266</td><td>15</td></tr>
+            <tr><td>4I</td><td>225</td><td>10</td><td>235</td><td>31</td></tr>
+            <tr><td>5I</td><td>214</td><td>9</td><td>223</td><td>12</td></tr>
+            <tr><td>6I</td><td>204</td><td>8</td><td>212</td><td>11</td></tr>
+            <tr><td>7I</td><td>188</td><td>7</td><td>195</td><td>17</td></tr>
+            <tr><td>8I</td><td>176</td><td>6</td><td>182</td><td>13</td></tr>
+            <tr><td>9I</td><td>166</td><td>5</td><td>171</td><td>11</td></tr>
+            <tr><td>PW</td><td>147</td><td>4</td><td>151</td><td>20</td></tr>
+            <tr><td>50°</td><td>126</td><td>3</td><td>129</td><td>22</td></tr>
+            <tr><td>56°</td><td>108</td><td>2</td><td>110</td><td>19</td></tr>
+            <tr><td>60°</td><td>99</td><td>1</td><td>100</td><td>10</td></tr>
+          </table>
+          <div class="hint" style="margin-top:4px">* Your calibrated distances (trimmed avg). Rollout estimated, medium firmness, backspin.</div>
+        </div>
+
+        <div class="panel" id="panel-masterNotes">
+          <div class="note" style="border-left-color:var(--bad)">
+            <b>⚡ Master Difficulty Key Differences:</b><br>
+            • Tempo windows are ~40% tighter than Amateur<br>
+            • Slight fast/slow tempo = 5-15 yard error<br>
+            • Wind gusts vary ±10-30% from displayed<br>
+            • Lie penalties are MORE severe (rough costs more)<br>
+            • No putt preview line — must read green manually<br>
+            • No spin indicator after contact — must feel it<br>
+            • Fast greens at Very Firm can 3-putt easily
+          </div>
+          <div class="note" style="border-left-color:var(--accent);margin-top:6px">
+            <b>🎯 Master Wind Tips:</b><br>
+            • Headwind hurts MORE than tailwind helps (asymmetric)<br>
+            • Downhill + headwind = wind effect amplified<br>
+            • Uphill + tailwind = wind effect reduced<br>
+            • Crosswind drift increases with altitude<br>
+            • Gust variance: trust 70% of displayed mph for safe play
+          </div>
+          <div class="note" style="border-left-color:var(--good);margin-top:6px">
+            <b>📊 Elevation Rules of Thumb:</b><br>
+            • Short irons/wedges (< 100y): 1y per 4ft elevation<br>
+            • Mid irons (100-170y): 1y per 3ft elevation<br>
+            • Long irons/woods (> 170y): 1y per 2.5ft elevation<br>
+            • Downhill = subtract yards BUT reduce rollout<br>
+            • Ball goes proportionally further downhill
+          </div>
+        </div>
+
+        <div class="panel" id="panel-formulas">
+          <div class="note" style="border-left-color:var(--muted)">
+            <b>📐 Calculation Formulas:</b><br><br>
+            <b>Wind Scaling (non-linear):</b><br>
+            distScale uses stepped curve fitting community data:<br>
+            &lt;60y: 0.35x | 60-100y: 0.65x | 100-150y: 0.85→1.0x<br>
+            150-200y: 1.0→1.2x | &gt;200y: 1.2→1.5x<br><br>
+            <b>Headwind:</b> mph × cos(θ) × 1.35 × distScale<br>
+            <b>Tailwind:</b> mph × cos(θ) × 0.75 × distScale<br>
+            <b>Crosswind:</b> mph × sin(θ) × 1.05 × distScale × sideMult<br><br>
+            <b>Lie Penalty:</b> applied as carry % reduction<br>
+            <b>Shot Type:</b> modifies trajectory height → wind multiplier<br>
+            <b>Elevation:</b> club-dependent (1y/4ft, 1y/3ft, 1y/2.5ft)<br>
+            <b>Rollout:</b> base × firmness × spin × lie × downhill modifier
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- RIGHT COLUMN: RESULTS -->
+    <section class="card">
+      <h2>📊 Results</h2>
+      <div class="grid-3" style="margin-bottom:8px">
+        <div class="kpi" style="grid-column:span 2">
+          <div class="label">⚡ Auto Club</div>
+          <div class="value" id="kpiClub" style="color:var(--accent)">—</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Lie</div>
+          <div class="value" id="kpiLie">0%</div>
+        </div>
+      </div>
+
+      <div class="grid-3">
+        <div class="kpi">
+          <div class="label">Wind</div>
+          <div class="value" id="kpiWind">0.0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Elev.</div>
+          <div class="value" id="kpiElev">0.0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Total adj.</div>
+          <div class="value" id="kpiTotal">0.0</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px">
+        <div class="label">Adjusted carry to pin</div>
+        <div class="big" id="carryToPin">150.0 y</div>
+      </div>
+
+      <div style="margin-top:10px">
+        <div class="label">Recommended <b>aim carry</b> (subtract rollout)</div>
+        <div class="big green" id="aimCarry">145.0 y</div>
+        <div class="hint" id="rollSummary">Includes wind, elevation, lie, rollout.</div>
+      </div>
+
+      <div style="margin-top:8px">
+        <div class="label">⚡ Recommended club & power</div>
+        <div class="big" id="clubRec" style="font-size:22px;color:var(--accent)">—</div>
+        <div class="hint" id="clubRecDetail">Enter yardage to get auto club selection.</div>
+      </div>
+
+      <hr class="divider">
+
+      <div style="margin-top:6px">
+        <div class="label">Crosswind lateral aim</div>
+        <div class="big" id="lateralAim">0.0 y (aim CENTER)</div>
+      </div>
+
+      <div style="margin-top:10px">
+        <div class="label">Effective rollout</div>
+        <div class="big" id="effectiveRollout" style="font-size:20px">5.0 y</div>
+      </div>
+
+      <hr class="divider">
+
+      <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">
+        <span class="pill" id="noteWind"></span>
+        <span class="pill" id="noteSide"></span>
+        <span class="pill" id="noteScaling"></span>
+        <span class="pill" id="noteLie"></span>
+        <span class="pill" id="noteShot"></span>
+        <span class="pill" id="noteGust"></span>
+      </div>
+
+      <hr class="divider">
+
+      <div style="margin-top:4px">
+        <div class="label">Gust variance (master difficulty)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:4px">
+          <div class="kpi">
+            <div class="label">Low</div>
+            <div class="value" id="gustLow" style="color:var(--good)">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Shown</div>
+            <div class="value" id="gustMid" style="color:var(--accent)">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">High</div>
+            <div class="value" id="gustHigh" style="color:var(--bad)">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note" style="margin-top:10px;border-left-color:var(--accent)">
+        <b>💡 Pro Tip:</b> <span id="proTip">Select a club and enter conditions to get advice.</span>
+      </div>
+    </section>
+  </main>
+
+<script>
+// ════════════════════════════════════════════════════
+// v8 AUTO — PERSONAL CLUB DATA (calibrated from range)
+// ════════════════════════════════════════════════════
+const MY_CLUBS = {
+  driver: { name:'Driver',  carry:315, rollout:22, cat:'wood' },
+  '3wood':{ name:'3 Wood',  carry:265, rollout:16, cat:'wood' },
+  '5wood':{ name:'5 Wood',  carry:252, rollout:14, cat:'wood' },
+  '4iron': { name:'4 Iron', carry:225, rollout:10, cat:'iron' },
+  '5iron': { name:'5 Iron', carry:214, rollout:9,  cat:'iron' },
+  '6iron': { name:'6 Iron', carry:204, rollout:8,  cat:'iron' },
+  '7iron': { name:'7 Iron', carry:188, rollout:7,  cat:'iron' },
+  '8iron': { name:'8 Iron', carry:176, rollout:6,  cat:'iron' },
+  '9iron': { name:'9 Iron', carry:166, rollout:5,  cat:'iron' },
+  pw:      { name:'PW',      carry:147, rollout:4,  cat:'wedge' },
+  '50deg': { name:'50°',     carry:126, rollout:3,  cat:'wedge' },
+  '56deg': { name:'56°',     carry:108, rollout:2,  cat:'wedge' },
+  '60deg': { name:'60°',     carry:99,  rollout:1,  cat:'wedge' },
+};
+
+function round1(x){ return Math.round((x + Number.EPSILON) * 10)/10 }
+
+// ── DISTANCE-BASED WIND SCALING (stepped, community-calibrated) ──
+function getDistScale(yardage) {
+  // Non-linear curve based on community wind testing
+  // Short shots: ball barely in air, less wind effect
+  // Long shots: more airtime, more wind exposure
+  if (yardage < 60)  return 0.35;
+  if (yardage < 80)  return 0.50;
+  if (yardage < 100) return 0.65;
+  if (yardage < 130) return 0.85;
+  if (yardage < 170) return 1.00;
+  if (yardage < 200) return 1.10;
+  if (yardage < 230) return 1.25;
+  return 1.40; // 230y+
+}
+
+// ── ELEVATION: Club-dependent conversion ──
+function getElevPerYard(yardage, clubType) {
+  // Wedges (short): 1y per 4ft, irons (mid): 1y per 3ft, woods/long: 1y per 2.5ft
+  if (clubType === 'wedge') return 1/4;   // 0.25 yards per foot
+  if (clubType === 'wood')  return 1/2.5;  // 0.40 yards per foot
+  return 1/3;                               // 0.33 yards per foot (irons)
+}
+
+// ── LIE PENALTY: Carry % reduction on master difficulty ──
+function getLiePenalty(lie) {
+  const penalties = {
+    fairway:    0.00,  // no penalty
+    lightRough: 0.07,  // 5-10%, use 7% for master
+    heavyRough: 0.20,  // 15-25%, use 20%
+    fwBunker:   0.12,  // 10-15%
+    gsBunker:   0.40,  // 30-50%, use 40% — very punishing
+    downhill:   0.03,  // slight mishit
+    uphill:     0.02   // minimal, mainly affects rollout
+  };
+  return penalties[lie] || 0;
+}
+
+function getLieRolloutMod(lie) {
+  // Modifies rollout based on lie
+  const mods = {
+    fairway:    1.0,
+    lightRough: 0.7,   // less rollout from rough
+    heavyRough: 0.4,   // very little rollout
+    fwBunker:   0.5,
+    gsBunker:   0.2,
+    downhill:   1.3,   // more rollout going downhill
+    uphill:     0.7    // less rollout going uphill
+  };
+  return mods[lie] || 1.0;
+}
+
+// ── SHOT TYPE: Trajectory height multiplier ──
+function getShotWindMult(shotType) {
+  // Higher trajectory = more wind effect
+  const mults = {
+    full:   1.0,
+    punch:  0.65,  // low trajectory, less wind
+    pitch:  0.85,  // medium-high
+    flop:   1.30,  // very high, max wind effect
+    chip:   0.40   // very low, minimal wind
+  };
+  return mults[shotType] || 1.0;
+}
+
+function getShotRolloutMod(shotType) {
+  const mods = {
+    full:   1.0,
+    punch:  1.4,   // punch rolls more
+    pitch:  0.7,
+    flop:   0.3,    // flop barely rolls
+    chip:   0.6
+  };
+  return mods[shotType] || 1.0;
+}
+
+// ── SPIN: Affects rollout and lateral ──
+function getSpinRolloutMod(spin) {
+  const mods = { backspin: 0.7, nospin: 1.0, topspin: 1.5 };
+  return mods[spin] || 1.0;
+}
+
+function getSpinLateralMod(spin) {
+  // Backspin holds line better, topspin drifts more
+  const mods = { backspin: 0.9, nospin: 1.0, topspin: 1.1 };
+  return mods[spin] || 1.0;
+}
+
+// ── FIRMNESS: Green rollout multiplier ──
+function getFirmnessMult(firmness) {
+  const mults = { soft: 0.55, medium: 1.0, firm: 1.4, veryFirm: 1.9 };
+  return mults[firmness] || 1.0;
+}
+
+// ── MAIN COMPUTE ──
+function compute() {
+  const yardage = parseFloat(document.getElementById('yardage').value) || 0;
+  const elevationFt = parseFloat(document.getElementById('elevation').value) || 0;
+  const windTotal = parseFloat(document.getElementById('windSpeed').value) || 0;
+  const windAngle = Math.max(0, Math.min(90, parseFloat(document.getElementById('windAngle').value) || 0));
+  const windDir = document.getElementById('windDir').value;
+  const sideDir = document.getElementById('sideDir').value;
+  const playerShape = document.getElementById('playerShape').value;
+  const shotType = document.getElementById('shotType').value;
+  const lieSelect = document.getElementById('lieSelect').value;
+  const spinType = document.getElementById('spinType').value;
+  const firmness = document.getElementById('firmness').value;
+  const clubSelect = document.getElementById('clubSelect');
+  const clubVal = clubSelect.value;
+
+  // Pre-compute lie penalty (needed for auto-club)
+  const liePen = getLiePenalty(lieSelect);
+
+  // ── AUTO-CLUB SELECTION ──
+  let selectedClub, clubType, baseRollout, typeForLateral;
+
+  if (clubVal === 'auto') {
+    // Pre-compute target carry for club matching
+    const preElevPerYd = 1/3; // default iron
+    const preDistScale = getDistScale(yardage);
+    const preTheta = windAngle * Math.PI / 180;
+    const preLongComp = windTotal * Math.cos(preTheta);
+    const preShotWindMult = getShotWindMult(shotType);
+    let preWindAdj = 0;
+    if (windDir === 'helping') {
+      preWindAdj = (-0.75 * preLongComp) * preDistScale * preShotWindMult;
+    } else {
+      preWindAdj = (1.35 * preLongComp) * preDistScale * preShotWindMult;
+    }
+    if (elevationFt < 0 && windDir === 'hurting') preWindAdj *= 1.08;
+    if (elevationFt > 0 && windDir === 'helping') preWindAdj *= 0.92;
+    let preElevAdj = Math.abs(elevationFt) * preElevPerYd;
+    if (elevationFt < 0) preElevAdj = -preElevAdj;
+    const targetCarry = yardage + preWindAdj + preElevAdj - (yardage * liePen);
+
+    // Find closest club that can reach (prefer minimal over-clubbing)
+    let bestClub = null;
+    let bestDiff = Infinity;
+    for (const key of Object.keys(MY_CLUBS)) {
+      const club = MY_CLUBS[key];
+      const diff = club.carry - targetCarry;
+      if (diff >= 0 && diff < bestDiff) {
+        bestDiff = diff;
+        bestClub = { key, ...club };
+      }
+    }
+    // If no club reaches, pick the longest
+    if (!bestClub) {
+      let maxCarry = 0;
+      for (const key of Object.keys(MY_CLUBS)) {
+        if (MY_CLUBS[key].carry > maxCarry) {
+          maxCarry = MY_CLUBS[key].carry;
+          bestClub = { key, ...MY_CLUBS[key] };
+        }
+      }
+    }
+
+    selectedClub = bestClub;
+    clubType = bestClub.cat;
+    baseRollout = bestClub.rollout;
+    typeForLateral = bestClub.cat;
+
+    // Update dropdown to show auto-selected club (user can override)
+    clubSelect.value = bestClub.key;
+    const powerPct = Math.round((targetCarry / bestClub.carry) * 100);
+    document.getElementById('clubHint').textContent =
+      `⚡ Auto: ${bestClub.name} (carry ${bestClub.carry}y, ~${Math.min(powerPct,100)}% power)`;
+  } else {
+    selectedClub = { key: clubVal, ...MY_CLUBS[clubVal] };
+    clubType = selectedClub.cat;
+    baseRollout = selectedClub.rollout;
+    typeForLateral = selectedClub.cat;
+    document.getElementById('clubHint').textContent =
+      `${selectedClub.name} — Carry: ${selectedClub.carry}y, Rollout: ${baseRollout}y`;
+  }
+
+  // Update rollout from manual input if changed
+  const rolloutInput = document.getElementById('rollout');
+  if (rolloutInput.value != baseRollout && rolloutInput._userEdited) {
+    baseRollout = parseFloat(rolloutInput.value) || baseRollout;
+  } else {
+    rolloutInput.value = baseRollout;
+  }
+
+  // ── 1. DISTANCE SCALING (non-linear) ──
+  const distScale = getDistScale(yardage);
+
+  // ── 2. ELEVATION (club-dependent) ──
+  const elevPerYd = getElevPerYard(yardage, clubType);
+  let elevAdj = Math.abs(elevationFt) * elevPerYd;
+  if (elevationFt < 0) elevAdj = -elevAdj; // downhill = subtract
+  // Downhill also increases rollout
+  let downhillRolloutBoost = elevationFt < 0 ? 1 + (Math.abs(elevationFt) * 0.005) : 1.0;
+  // Uphill reduces rollout
+  let uphillRolloutReduce = elevationFt > 0 ? 1 - (elevationFt * 0.003) : 1.0;
+
+  // ── 3. WIND COMPONENTS ──
+  const theta = windAngle * Math.PI / 180;
+  const longComp = windTotal * Math.cos(theta);
+  const sideComp = windTotal * Math.sin(theta);
+  const shotWindMult = getShotWindMult(shotType);
+
+  // ── 4. HEADWIND/TAILWIND (asymmetric + distance scaling) ──
+  let windAdj = 0;
+  if (windDir === 'helping') {
+    // Tailwind: less effect per mph (0.75 vs 1.35 for headwind)
+    windAdj = (-0.75 * longComp) * distScale * shotWindMult;
+  } else {
+    // Headwind: more effect per mph
+    windAdj = (1.35 * longComp) * distScale * shotWindMult;
+  }
+
+  // Elevation + wind interaction: downhill into headwind = more wind effect
+  if (elevationFt < 0 && windDir === 'hurting') {
+    windAdj *= 1.08; // 8% more wind effect when downhill into headwind
+  }
+  if (elevationFt > 0 && windDir === 'helping') {
+    windAdj *= 0.92; // 8% less tailwind effect going uphill
+  }
+
+  // ── 5. LIE PENALTY ──
+  const lieRollMod = getLieRolloutMod(lieSelect);
+  const carryAfterLie = yardage * (1 - liePen);
+
+  // ── 6. TOTAL ADJUSTMENT ──
+  const totalAdj = windAdj + elevAdj;
+  // Apply adjustments to the post-lie carry
+  const adjustedCarry = carryAfterLie + totalAdj;
+
+  // ── 7. ROLLOUT CALCULATION ──
+  const spinRollMod = getSpinRolloutMod(spinType);
+  const shotRollMod = getShotRolloutMod(shotType);
+  const firmMult = getFirmnessMult(firmness);
+  
+  let effectiveRollout = baseRollout 
+    * firmMult 
+    * spinRollMod 
+    * shotRollMod 
+    * lieRollMod
+    * downhillRolloutBoost
+    * uphillRolloutReduce;
+  
+  // Minimum rollout
+  effectiveRollout = Math.max(0, effectiveRollout);
+
+  const aimCarry = adjustedCarry - effectiveRollout;
+
+  // ── 8. LATERAL AIM ──
+  let supports = (playerShape === 'fade' && sideDir === 'LtoR') || (playerShape === 'draw' && sideDir === 'RtoL');
+  const baseSideMult = playerShape === 'straight' ? 1.1 : (supports ? 0.9 : 1.25);
+  const spinLatMod = getSpinLateralMod(spinType);
+  // Club type lateral: short irons drift less
+  const clubLatMod = typeForLateral === 'wood' ? 1.15 : (typeForLateral === 'wedge' ? 0.85 : 1.0);
+
+  let lateralYards = (sideComp * baseSideMult * spinLatMod * clubLatMod) * distScale * shotWindMult;
+  let lateralDir = sideDir === 'LtoR' ? 1 : -1;
+  let lateralAim = lateralYards * lateralDir;
+
+  // ── 9. GUST VARIANCE (master difficulty) ──
+  const gustLow = Math.round(windTotal * 0.7 * 10) / 10;
+  const gustHigh = Math.round(windTotal * 1.3 * 10) / 10;
+
+  // ── UI UPDATES ──
+  const fmt = (v) => (v >= 0 ? '+' : '') + round1(v);
+  
+  document.getElementById('kpiWind').textContent = fmt(windAdj);
+  document.getElementById('kpiWind').className = 'value ' + (windAdj > 0 ? 'neg' : windAdj < 0 ? 'pos' : '');
+  document.getElementById('kpiElev').textContent = fmt(elevAdj);
+  document.getElementById('kpiElev').className = 'value ' + (elevAdj > 0 ? 'pos' : elevAdj < 0 ? 'neg' : '');
+  document.getElementById('kpiLie').textContent = '-' + Math.round(liePen * 100) + '%';
+  document.getElementById('kpiLie').className = 'value ' + (liePen > 0 ? 'neg' : '');
+  const totalWithLie = totalAdj - (yardage * liePen);
+  document.getElementById('kpiTotal').textContent = fmt(totalWithLie);
+  document.getElementById('kpiTotal').className = 'value';
+
+  document.getElementById('carryToPin').textContent = `${round1(adjustedCarry)} y`;
+  document.getElementById('aimCarry').textContent = `${round1(aimCarry)} y`;
+  document.getElementById('aimCarry').className = 'big ' + (aimCarry > 0 ? 'green' : 'red');
+  document.getElementById('lateralAim').textContent = `${round1(Math.abs(lateralAim))} y ${lateralAim > 0 ? '(aim LEFT)' : lateralAim < 0 ? '(aim RIGHT)' : '(aim CENTER)'}`;
+  document.getElementById('effectiveRollout').textContent = `${round1(effectiveRollout)} y`;
+  document.getElementById('rollSummary').textContent = 
+    `Carry ${round1(adjustedCarry)}y − rollout ${round1(effectiveRollout)}y = aim ${round1(aimCarry)}y`;
+
+  // Pills
+  document.getElementById('noteWind').textContent = `Wind: ${fmt(windAdj)}y`;
+  document.getElementById('noteWind').className = 'pill ' + (windAdj > 0 ? 'bad' : windAdj < 0 ? 'good' : '');
+  document.getElementById('noteSide').textContent = `Lateral: ${round1(Math.abs(lateralAim))}y`;
+  document.getElementById('noteSide').className = 'pill ' + (Math.abs(lateralAim) > 5 ? 'bad' : '');
+  document.getElementById('noteScaling').textContent = `Wind scaling: ${round1(distScale)}x`;
+  document.getElementById('noteLie').textContent = `Lie penalty: -${Math.round(liePen*100)}%`;
+  document.getElementById('noteLie').className = 'pill ' + (liePen > 0.1 ? 'bad' : liePen > 0 ? 'warn' : '');
+  document.getElementById('noteShot').textContent = `${shotType.charAt(0).toUpperCase() + shotType.slice(1)} shot`;
+  document.getElementById('noteGust').textContent = `Gust: ${gustLow}–${gustHigh} mph`;
+  document.getElementById('noteGust').className = 'pill warn';
+
+  document.getElementById('windStrDisplay').textContent = `Wind Strength: ${Math.round(distScale * 100)}%`;
+  document.getElementById('liePenDisplay').textContent = `Lie: -${Math.round(liePen * 100)}%`;
+
+  // Gust variance
+  document.getElementById('gustLow').textContent = gustLow + ' mph';
+  document.getElementById('gustMid').textContent = windTotal + ' mph';
+  document.getElementById('gustHigh').textContent = gustHigh + ' mph';
+
+  // ── PRO TIPS ──
+  let tips = [];
+  if (liePen >= 0.4) tips.push('🚨 Greenside bunker! Consider laying up or adding 40% to your carry.');
+  if (liePen >= 0.2 && liePen < 0.4) tips.push('⚠️ Heavy rough — expect 20% less carry and very little rollout.');
+  if (liePen > 0 && liePen < 0.2) tips.push('📍 Rough/fairway bunker lie — distance penalty applied.');
+  if (Math.abs(windAdj) > 15) tips.push('💨 Heavy wind impact — club up/down accordingly.');
+  if (shotType === 'flop' && windTotal > 8) tips.push('🌀 Flop in wind is risky — wind effect +30%. Consider lower shot.');
+  if (shotType === 'punch') tips.push('🔽 Punch shot: low trajectory reduces wind effect by 35%.');
+  if (spinType === 'topspin') tips.push('⚡ Topspin adds 50% rollout — aim shorter.');
+  if (spinType === 'backspin') tips.push('🔄 Backspin reduces rollout 30% — aim more at pin.');
+  if (elevationFt < -10) tips.push('⬇️ Significant downhill — reduce carry, expect extra rollout.');
+  if (elevationFt > 10) tips.push('⬆️ Significant uphill — add carry, expect less rollout.');
+  if (firmness === 'veryFirm') tips.push('🧊 Very firm greens — rollout amplified. Backspin essential.');
+  if (Math.abs(lateralAim) > 8) tips.push('↔️ Large crosswind aim offset — consider shaping your shot into the wind.');
+  if (windTotal > 15) tips.push('🌊 Strong wind — master gusts can vary ±30%. Play conservative.');
+
+  if (tips.length === 0) tips.push('✅ Conditions look manageable. Hit your normal shot.');
+  document.getElementById('proTip').textContent = tips.join(' ');
+
+  // ── CLUB RECOMMENDATION DISPLAY ──
+  if (selectedClub) {
+    const powerPct = Math.round((adjustedCarry / selectedClub.carry) * 100);
+    const clubRecEl = document.getElementById('clubRec');
+    const clubRecDetailEl = document.getElementById('clubRecDetail');
+    const kpiClub = document.getElementById('kpiClub');
+
+    if (adjustedCarry <= selectedClub.carry) {
+      const pct = Math.min(powerPct, 100);
+      if (kpiClub) { kpiClub.textContent = selectedClub.name; kpiClub.style.color = pct > 95 ? 'var(--good)' : pct > 80 ? 'var(--accent)' : 'var(--warn)'; }
+      clubRecEl.textContent = selectedClub.name + ' @ ~' + pct + '% power';
+      clubRecEl.style.color = pct > 95 ? 'var(--good)' : pct > 80 ? 'var(--accent)' : 'var(--warn)';
+      if (pct < 85) {
+        clubRecDetailEl.textContent = 'Club carry ' + selectedClub.carry + 'y covers ' + Math.round(adjustedCarry) + 'y target. Consider longer club for full swing.';
+      } else {
+        clubRecDetailEl.textContent = 'Club carry ' + selectedClub.carry + 'y → target ' + Math.round(adjustedCarry) + 'y. Full swing.';
+      }
+    } else {
+      const shortBy = Math.round(adjustedCarry - selectedClub.carry);
+      if (kpiClub) { kpiClub.textContent = '⚠️ ' + shortBy + 'y short'; kpiClub.style.color = 'var(--bad)'; }
+      clubRecEl.textContent = '⚠️ ' + selectedClub.name + ' is ' + shortBy + 'y short!';
+      clubRecEl.style.color = 'var(--bad)';
+      clubRecDetailEl.textContent = 'Need ' + Math.round(adjustedCarry) + 'y carry. Max: ' + selectedClub.carry + 'y. No club reaches.';
+    }
+  }
+}
+
+// ── EVENT LISTENERS ──
+const inputs = ['yardage','elevation','windSpeed','windAngle','windDir','sideDir','playerShape','firmness','clubSelect','shotType','lieSelect','spinType'];
+inputs.forEach(id => {
+  document.getElementById(id).addEventListener('input', compute);
+  document.getElementById(id).addEventListener('change', compute);
+});
+
+// Track manual rollout edits
+document.getElementById('rollout').addEventListener('input', function() {
+  this._userEdited = true;
+  compute();
+});
+
+// When club selection changes, update club and rollout
+document.getElementById('clubSelect').addEventListener('change', function() {
+  const rolloutInput = document.getElementById('rollout');
+  rolloutInput._userEdited = false;
+  // Force auto-recalculate with new club
+  compute();
+});
+
+// Reset
+document.getElementById('resetBtn').addEventListener('click', () => {
+  document.getElementById('yardage').value = 150;
+  document.getElementById('elevation').value = 0;
+  document.getElementById('windSpeed').value = 10;
+  document.getElementById('windAngle').value = 0;
+  document.getElementById('windDir').value = 'hurting';
+  document.getElementById('sideDir').value = 'LtoR';
+  document.getElementById('playerShape').value = 'fade';
+  document.getElementById('firmness').value = 'medium';
+  document.getElementById('clubSelect').value = 'auto';
+  document.getElementById('rollout').value = 7;
+  document.getElementById('rollout')._userEdited = false;
+  document.getElementById('shotType').value = 'full';
+  document.getElementById('lieSelect').value = 'fairway';
+  document.getElementById('spinType').value = 'backspin';
+  compute();
+});
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+compute();
+</script>
+</body>
+</html>
