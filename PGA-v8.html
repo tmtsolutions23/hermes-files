@@ -494,6 +494,9 @@ function getFirmnessMult(firmness) {
 }
 
 // ── MAIN COMPUTE ──
+// Track auto-mode vs manual club selection
+let _autoMode = true;
+
 function compute() {
   const yardage = parseFloat(document.getElementById('yardage').value) || 0;
   const elevationFt = parseFloat(document.getElementById('elevation').value) || 0;
@@ -515,7 +518,7 @@ function compute() {
   // ── AUTO-CLUB SELECTION ──
   let selectedClub, clubType, baseRollout, typeForLateral;
 
-  if (clubVal === 'auto') {
+  if (_autoMode && clubVal === 'auto') {
     // Pre-compute target carry for club matching
     const preElevPerYd = 1/3; // default iron
     const preDistScale = getDistScale(yardage);
@@ -561,11 +564,11 @@ function compute() {
     baseRollout = bestClub.rollout;
     typeForLateral = bestClub.cat;
 
-    // Update dropdown to show auto-selected club (user can override)
-    clubSelect.value = bestClub.key;
+    // Don't change dropdown — keep it on "auto" so it re-evaluates next time
+    clubSelect.value = 'auto';
     const powerPct = Math.round((targetCarry / bestClub.carry) * 100);
     document.getElementById('clubHint').textContent =
-      `⚡ Auto: ${bestClub.name} (carry ${bestClub.carry}y, ~${Math.min(powerPct,100)}% power)`;
+      `⚡ Auto → ${bestClub.name} (carry ${bestClub.carry}y, ~${Math.min(powerPct,100)}% power)`;
   } else {
     selectedClub = { key: clubVal, ...MY_CLUBS[clubVal] };
     clubType = selectedClub.cat;
@@ -761,11 +764,11 @@ document.getElementById('rollout').addEventListener('input', function() {
   compute();
 });
 
-// When club selection changes, update club and rollout
+// When club selection changes manually
 document.getElementById('clubSelect').addEventListener('change', function() {
   const rolloutInput = document.getElementById('rollout');
   rolloutInput._userEdited = false;
-  // Force auto-recalculate with new club
+  _autoMode = (this.value === 'auto');
   compute();
 });
 
@@ -782,6 +785,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   document.getElementById('clubSelect').value = 'auto';
   document.getElementById('rollout').value = 7;
   document.getElementById('rollout')._userEdited = false;
+  _autoMode = true;
   document.getElementById('shotType').value = 'full';
   document.getElementById('lieSelect').value = 'fairway';
   document.getElementById('spinType').value = 'backspin';
