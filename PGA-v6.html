@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PGA Tour 2K25 Distance Calculator (v7 - Scaled)</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#131a22; --ink:#e6edf3; --muted:#9fb1c1; --accent:#49a1ff; --good:#3ecf8e; --bad:#ff6b6b; }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);}
+  header{padding:20px 16px;border-bottom:1px solid #1d2733;background:linear-gradient(180deg,#0f1520,#0b0f14)}
+  h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.2px}
+  main{max-width:1100px;margin:24px auto;padding:0 16px;display:grid;gap:16px;grid-template-columns:1.1fr .9fr}
+  .card{background:var(--panel);border:1px solid #1d2733;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:16px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  input,select{width:100%;padding:10px 12px;background:#0f1620;border:1px solid #273445;border-radius:10px;color:var(--ink);outline:none}
+  input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(73,161,255,.15)}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#0f1620;border:1px solid #273445;color:var(--muted);font-size:12px;margin-right:8px}
+  .big{font-size:34px;font-weight:800;letter-spacing:-0.02em}
+  .kpi{padding:10px;border-radius:12px;background:#0e151e;border:1px solid #203040}
+  .kpi .label{font-size:11px;color:var(--muted)}
+  .kpi .value{font-size:18px;font-weight:700}
+  .btn{cursor:pointer;user-select:none;border:none;border-radius:10px;background:var(--accent);color:#04101e;padding:10px 14px;font-weight:700}
+  .btn.secondary{background:#0f1620;color:var(--ink);border:1px solid #273445}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  @media (max-width: 980px){ main{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+  <header>
+    <h1>PGA Tour 2K25 – Scaled Distance Calculator</h1>
+  </header>
+  <main>
+    <section class="card">
+      <h2 style="margin-top:0">Inputs</h2>
+      <div class="row">
+        <div>
+          <label for="yardage">Yardage to pin (yards)</label>
+          <input id="yardage" type="number" inputmode="decimal" value="150" step="0.1">
+        </div>
+        <div>
+          <label for="elevation">Elevation (feet)</label>
+          <input id="elevation" type="number" inputmode="decimal" value="0" step="0.1">
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label for="windSpeed">Wind speed (mph)</label>
+          <input id="windSpeed" type="number" inputmode="decimal" value="10" step="0.1">
+        </div>
+        <div>
+          <label for="windAngle">Wind angle (degrees)</label>
+          <input id="windAngle" type="number" inputmode="decimal" value="0" min="0" max="90" step="1">
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label for="windDir">Head/tail direction</label>
+          <select id="windDir">
+            <option value="helping">Helping (tailwind)</option>
+            <option value="hurting">Hurting (headwind)</option>
+          </select>
+        </div>
+        <div>
+          <label for="sideDir">Cross direction</label>
+          <select id="sideDir">
+            <option value="LtoR">Left → Right</option>
+            <option value="RtoL">Right → Left</option>
+          </select>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid #243240;margin:16px 0">
+
+      <div class="row">
+        <div>
+          <label for="playerShape">My shot shape</label>
+          <select id="playerShape">
+            <option value="fade" selected>Fade (L→R)</option>
+            <option value="draw">Draw (R→L)</option>
+            <option value="straight">Straight</option>
+          </select>
+        </div>
+        <div>
+          <label for="firmness">Green Firmness</label>
+          <select id="firmness">
+            <option value="soft">Soft</option>
+            <option value="medium" selected>Medium</option>
+            <option value="firm">Firm</option>
+            <option value="veryFirm">Very Firm</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label for="clubType">Club type</label>
+          <select id="clubType">
+            <option value="iron" selected>Iron</option>
+            <option value="wood">Wood / Hybrid</option>
+          </select>
+        </div>
+        <div>
+          <label for="rollout">Base rollout (yards)</label>
+          <input id="rollout" type="number" inputmode="decimal" value="5" step="0.1">
+        </div>
+      </div>
+
+      <div style="margin-top:20px; display:flex; gap:10px; align-items:center;">
+          <button class="btn" id="calcBtn">Calculate</button>
+          <button class="btn secondary" id="resetBtn">Reset</button>
+          <span class="pill" id="windStrDisplay">Wind Strength: 100%</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top:0">Results</h2>
+      <div class="grid-3">
+        <div class="kpi">
+          <div class="label">Wind adj.</div>
+          <div class="value" id="kpiWind">0.0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Elev. adj.</div>
+          <div class="value" id="kpiElev">0.0</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Total adj.</div>
+          <div class="value" id="kpiTotal">0.0</div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px">
+        <div class="label">Adjusted carry to pin</div>
+        <div class="big" id="carryToPin">150.0 y</div>
+      </div>
+
+      <div style="margin-top:16px">
+        <div class="label">Recommended <b>aim carry</b></div>
+        <div class="big" id="aimCarry">145.0 y</div>
+        <div class="hint" id="rollSummary">Includes scaled wind + rollout.</div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid #243240;margin:16px 0">
+
+      <div>
+        <div class="label">Crosswind lateral aim</div>
+        <div class="big" id="lateralAim">0.0 y</div>
+      </div>
+
+      <div style="margin-top:16px;display:grid;gap:8px">
+        <div class="pill" id="noteWind"></div>
+        <div class="pill" id="noteSide"></div>
+        <div class="pill" id="noteScaling"></div>
+      </div>
+    </section>
+  </main>
+
+<script>
+function round1(x){ return Math.round((x + Number.EPSILON) * 10)/10 }
+function toRad(deg){ return deg * Math.PI / 180 }
+
+function compute(){
+  const yardage = parseFloat(document.getElementById('yardage').value) || 0;
+  const elevationFt = parseFloat(document.getElementById('elevation').value) || 0;
+  const windTotal = parseFloat(document.getElementById('windSpeed').value) || 0;
+  const windAngle = Math.max(0, Math.min(90, parseFloat(document.getElementById('windAngle').value) || 0));
+  const windDir = document.getElementById('windDir').value;
+  const sideDir = document.getElementById('sideDir').value;
+  const playerShape = document.getElementById('playerShape').value;
+  const clubType = document.getElementById('clubType').value;
+  const baseRollout = parseFloat(document.getElementById('rollout').value) || 0;
+  const firmness = document.getElementById('firmness').value;
+
+  // 1. Distance-Based Wind Scaling Factor
+  // We assume 150y is "Full Strength" (1.0). 
+  // 50y is roughly 0.4 strength. 250y is roughly 1.3 strength.
+  let distScale = Math.max(0.3, Math.min(1.5, yardage / 150));
+  document.getElementById('windStrDisplay').textContent = `Wind Strength: ${Math.round(distScale * 100)}%`;
+
+  // 2. Elevation Logic: 3ft = 1y
+  const elevAdj = elevationFt / 3.0;
+
+  // 3. Wind Components
+  const theta = toRad(windAngle);
+  const longComp = windTotal * Math.cos(theta);
+  const sideComp = windTotal * Math.sin(theta);
+
+  // 4. Carry adjustments with distance scaling
+  let windAdj = 0;
+  if (windDir === 'helping'){
+    windAdj = (-0.8 * longComp) * distScale;
+  } else {
+    // Headwinds hurt more on full shots, but less on low-arc short shots
+    const baseMult = (yardage >= 100) ? 1.5 : 1.2;
+    windAdj = (baseMult * longComp) * distScale;
+  }
+
+  const totalAdj = windAdj + elevAdj;
+  const adjustedCarry = yardage + totalAdj;
+
+  // 5. Firmness & Rollout
+  const firmnessMults = {'soft': 0.7, 'medium': 1.0, 'firm': 1.4, 'veryFirm': 1.8};
+  const finalRollout = baseRollout * firmnessMults[firmness];
+  const aimCarry = adjustedCarry - finalRollout;
+
+  // 6. Lateral Aim with scaling
+  let supports = (playerShape === 'fade' && sideDir === 'LtoR') || (playerShape === 'draw' && sideDir === 'RtoL');
+  const sideMult = playerShape === 'straight' ? 1.1 : (supports ? 1.0 : 1.2);
+  const lateralAim = ((sideComp * sideMult) * distScale) * (sideDir === 'LtoR' ? 1 : -1);
+
+  // UI Updates
+  document.getElementById('kpiWind').textContent = (windAdj >= 0 ? '+' : '') + round1(windAdj);
+  document.getElementById('kpiElev').textContent = (elevAdj >= 0 ? '+' : '') + round1(elevAdj);
+  document.getElementById('kpiTotal').textContent = (totalAdj >= 0 ? '+' : '') + round1(totalAdj);
+  document.getElementById('carryToPin').textContent = `${round1(adjustedCarry)} y`;
+  document.getElementById('aimCarry').textContent = `${round1(aimCarry)} y`;
+  document.getElementById('lateralAim').textContent = `${round1(Math.abs(lateralAim))} y ${lateralAim > 0 ? '(aim LEFT)' : '(aim RIGHT)'}`;
+  
+  document.getElementById('noteWind').textContent = `Scaled Wind: ${round1(windAdj)}y`;
+  document.getElementById('noteSide').textContent = `Scaled Lateral: ${round1(Math.abs(lateralAim))}y`;
+  document.getElementById('noteScaling').textContent = `Distance Scaling: ${round1(distScale)}x multiplier applied.`;
+}
+
+// Event Listeners
+['yardage','elevation','windSpeed','windAngle','windDir','sideDir','playerShape','rollout','firmness'].forEach(id => {
+  document.getElementById(id).addEventListener('input', compute);
+});
+
+document.getElementById('clubType').addEventListener('change', (e) => {
+  document.getElementById('rollout').value = e.target.value === 'iron' ? 5 : 12;
+  compute();
+});
+
+compute();
+</script>
+</body>
+</html>
