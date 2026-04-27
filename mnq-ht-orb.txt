@@ -1,0 +1,552 @@
+// ──────────────────────────────────────────────────────────────────────────────
+//  ORB+HTF — Opening Range Breakout with HTF Slope Filter
+//  Production Indicator for MNQ1! / NQ1! on 5-minute chart
+//
+//  Validated Parameters (Walk-Forward, Sharpe 7.75):
+//    ORB Bars:    4  (20-min opening range on 5-min chart)
+//    Profit Ratio: 3.5  (TP = 3.5× opening range)
+//    Trailing Stop: 1.3% from best price
+//    Breakout %:  0.03% above/below OR
+//    HTF Filter:  1h EMA(20) slope direction
+//    Session:     9:30 AM – 3:50 PM ET  (entries until 3:50, EOD close by 3:50)
+//    EOD Close:   10 min before session end (4:00 PM)
+//
+//  TRADING WINDOW:
+//    9:30–9:50  ORB Window (building range, no entries)
+//    9:50–15:50 Active Trading (entries allowed if conditions met)
+//    15:50       Force close all positions (EOD)
+//    After 15:50 No new entries, flat until next day
+//
+//  STOP LOSS & TAKE PROFIT:
+//    Initial SL:  Opposite side of opening range (longs: ORB low, shorts: ORB high)
+//    Trailing SL: 1.3% from best price (kicks in after entry, only tightens)
+//    Take Profit: OR entry + 3.5× range width (long) or OR entry - 3.5× range width (short)
+//    Max R:R:     ~1:3.5 initial, improves with trailing
+//
+//  ALERTS — two options depending on what you need:
+//
+//  OPTION A — Basic dropdown alerts (static messages):
+//    1. Add this indicator to your MNQ1! 5-min chart
+//    2. Right-click on chart → Add Alert
+//    3. Select "ORB+HTF [MNQ/NQ]" from condition dropdown
+//    4. Choose the alert type:
+//       - "ORB Long Entry"  → fires on long breakout
+//       - "ORB Short Entry" → fires on short breakout
+//       - "ORB Long Exit"   → fires on long close (SL/TP/EOD)
+//       - "ORB Short Exit"  → fires on short close (SL/TP/EOD)
+//       - "ORB Any Signal"  → fires on any entry or exit
+//    5. Set notification: Webhook / App push / etc.
+//
+//  OPTION B — Rich webhook alerts (full SL/TP/risk/HTF context in body):
+//    1. Add Alert
+//    2. Condition = "Any alert() function call"
+//    3. Paste your webhook URL (Discord, trade journal, phone push)
+//    → one alert catches every entry/exit; message self-describes direction + details.
+//
+//  POSITION SIZING ($50K eval):
+//    MNQ: 3 contracts (SL ~$500-750, risk ~1-1.5% per trade)
+//    4 contracts if eval allows (SL ~$650-1000, risk ~1.3-2% per trade)
+//
+//  Created: 2026-04-23
+//  Updated: 2026-04-23 — v3: Enhanced dashboard with session phase, SL/TP details, risk amounts
+//  Source: lin-r0987765/mnq-backtest ORB v8 + walk-forward validation
+// ──────────────────────────────────────────────────────────────────────────────
+
+//@version=5
+indicator("ORB+HTF [MNQ/NQ]", overlay=true, max_lines_count=50, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+group_orb = "═══ Opening Range ═══"
+orbBars      = input.int(4,       "ORB Bars (1 bar = chart interval)", minval=1, maxval=12, group=group_orb, tooltip="4 bars on 5-min = 20 min opening range")
+profitRatio  = input.float(3.5,   "Profit Ratio (TP = range × this)", minval=0.5, maxval=10, step=0.1, group=group_orb, tooltip="3.5 = TP is 3.5× the opening range width")
+breakoutPct  = input.float(0.03,   "Breakout Confirm %", minval=0, maxval=1, step=0.01, group=group_orb, tooltip="Price must exceed OR by this % to confirm breakout. 0.03% for MNQ")
+closeBefore  = input.int(10,       "EOD Close (min before session end)", minval=0, maxval=60, group=group_orb, tooltip="Force close N minutes before session end")
+sessStartH   = input.int(9,       "Session Start Hour (ET)", minval=0, maxval=23, group=group_orb, tooltip="RTH start hour in Eastern time")
+sessStartM   = input.int(30,      "Session Start Min (ET)", minval=0, maxval=59, group=group_orb, tooltip="RTH start minute in Eastern time")
+
+group_trail = "═══ Trailing Stop ═══"
+useTrail     = input.bool(true,    "Use Trailing Stop", group=group_trail)
+trailPct     = input.float(1.3,    "Trail % from Best Price", minval=0.1, maxval=5.0, step=0.1, group=group_trail, tooltip="1.3% = trail kicks in at 1.3% from best price")
+
+group_htf = "═══ HTF Filter ═══"
+useHtf       = input.bool(true,   "Use HTF Slope Filter", group=group_htf)
+htfLen1      = input.int(20,      "HTF EMA Fast", minval=5, maxval=50, group=group_htf, tooltip="1h EMA fast length")
+htfLen2      = input.int(30,      "HTF EMA Slow", minval=10, maxval=100, group=group_htf, tooltip="1h EMA slow length")
+htfMode      = input.string("slope", "HTF Mode", options=["slope", "ema_cross"], group=group_htf, tooltip="'slope' = EMA direction, 'ema_cross' = EMA20 vs EMA50")
+
+group_skip = "═══ Day Filters ═══"
+skipShortAfterUp = input.int(2,    "Skip Shorts After N Up Days", minval=0, maxval=5, group=group_skip, tooltip="After 2+ consecutive up days, skip short entries")
+skipLongAfterUp  = input.int(3,   "Skip Longs After N Up Days", minval=0, maxval=5, group=group_skip, tooltip="After 3+ consecutive up days, skip long entries (chase protection)")
+oneTradePerDay   = input.bool(true,  "One Trade Per Day (Classic ORB)", group=group_skip, tooltip="Only take the initial ORB breakout. Re-entries after SL are blocked. This is the traditional ORB definition — the edge is in the opening range breakout, not re-tries.")
+
+group_sizing = "═══ Position Sizing ═══"
+contracts    = input.int(3,        "Number of Contracts", minval=1, maxval=10, group=group_sizing, tooltip="Number of MNQ contracts for $ risk display")
+pointValue   = input.float(2.0,    "Point Value ($/pt)", minval=0.01, maxval=100, group=group_sizing, tooltip="MNQ=$2, NQ=$20, ES=$50, MES=$5")
+
+group_visual = "═══ Visuals ═══"
+showORB      = input.bool(true,    "Show Opening Range Box", group=group_visual)
+showHTF      = input.bool(true,    "Show HTF Bias Arrow", group=group_visual)
+showLevels   = input.bool(true,    "Show SL/TP Lines on Chart", group=group_visual)
+showDash     = input.bool(true,    "Show Dashboard Panel", group=group_visual)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION TIME HELPERS (Exchange timezone = US/Eastern)
+// ══════════════════════════════════════════════════════════════════════════════
+
+TZ = "America/New_York"
+isNewDay = ta.change(time("D", "", TZ)) != 0
+sessStart = sessStartH * 100 + sessStartM
+sessEnd   = 1600  // 4:00 PM ET
+
+// Time in minutes from midnight (forced to Eastern Time regardless of exchange TZ)
+etHour   = hour(time, TZ)
+etMinute = minute(time, TZ)
+currentMinutes = etHour * 60 + etMinute
+orbStartMin = int(sessStart / 100) * 60 + sessStart % 100  // e.g., 9*60+30=570
+orbEndMin   = orbStartMin + int(orbBars * timeframe.in_seconds() / 60)  // e.g., 570+20=590
+
+currentTime = etHour * 100 + etMinute
+isRTH       = currentTime >= sessStart and currentTime < sessEnd
+isORBWindow = currentMinutes >= orbStartMin and currentMinutes < orbEndMin
+sessEndMin   = int(sessEnd / 100) * 60 + sessEnd % 100           // 16*60 = 960 min
+eodCloseMin  = sessEndMin - closeBefore                           // e.g., 960-10 = 950 min (3:50 PM)
+eodCloseTime = int(eodCloseMin / 60) * 100 + eodCloseMin % 60    // HHMM for comparisons: 1550
+
+// Determine session phase for dashboard
+string sessionPhase = "After Hours"
+if isRTH and isORBWindow
+    sessionPhase := "ORB Window ⏳"
+else if isRTH and currentTime < eodCloseTime and not isORBWindow
+    sessionPhase := "🟢 Active Trading"
+else if isRTH and currentTime >= eodCloseTime
+    sessionPhase := "🔴 Past EOD Close"
+else if not isRTH and currentTime < sessStart
+    sessionPhase := "Pre-Market"
+else if not isRTH and currentTime >= sessEnd
+    sessionPhase := "After Hours"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HTF BIAS (1h EMA slope from request.security)
+// ══════════════════════════════════════════════════════════════════════════════
+
+htfEmaFast = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1))
+htfEmaSlow = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2))
+htfSlopeFast = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1) - ta.ema(close, htfLen1)[1])
+htfSlopeSlow = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2) - ta.ema(close, htfLen2)[1])
+
+var int htfBias = 0  // +1 = bullish, -1 = bearish, 0 = neutral
+
+if useHtf
+    if htfMode == "slope"
+        htfBias := htfSlopeFast > 0 and htfSlopeSlow > 0 ? 1 : htfSlopeFast < 0 and htfSlopeSlow < 0 ? -1 : 0
+    else  // ema_cross
+        htfBias := htfEmaFast > htfEmaSlow ? 1 : htfEmaFast < htfEmaSlow ? -1 : 0
+else
+    htfBias := 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TRACK CONSECUTIVE UP DAYS
+// ══════════════════════════════════════════════════════════════════════════════
+
+var int upDayCount = 0
+dailyClose = request.security(syminfo.tickerid, "D", close)
+dailyOpenD = request.security(syminfo.tickerid, "D", open)
+
+if isNewDay
+    if dailyClose[1] > dailyOpenD[1]
+        upDayCount := upDayCount + 1
+    else
+        upDayCount := 0
+
+allowLong  = not (skipLongAfterUp > 0 and upDayCount >= skipLongAfterUp)
+allowShort = not (skipShortAfterUp > 0 and upDayCount >= skipShortAfterUp)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// OPENING RANGE CALCULATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float orbHigh    = na
+var float orbLow     = na
+var float orbMid     = na
+var float rangeWidth = na
+var bool  orbSet     = false
+var bool  tradedToday = false     // Classic ORB: one entry per day
+
+// Reset at start of each new day
+if isNewDay
+    orbSet := false
+    orbHigh := na
+    orbLow  := na
+    tradedToday := false
+
+// Build ORB during the opening range window
+if isORBWindow
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow  := na(orbLow)  ? low                    : math.min(orbLow, low)
+    orbSet  := true
+
+// After ORB window, finalize range
+if not isORBWindow and orbSet and na(rangeWidth)
+    rangeWidth := orbHigh - orbLow
+    orbMid     := (orbHigh + orbLow) / 2
+
+// Reset rangeWidth at end of day so it recalculates next day
+if currentTime >= sessEnd
+    rangeWidth := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ENTRY / EXIT LOGIC
+// ══════════════════════════════════════════════════════════════════════════════
+
+var bool  inLong      = false
+var bool  inShort     = false
+var float entryPrice   = na
+var float slPrice      = na
+var float initialSl    = na    // initial SL for display (before trail)
+var float tpPrice      = na
+var float bestPrice    = na
+
+// Breakout levels (only computed after ORB is set)
+longEntry  = not na(rangeWidth) and rangeWidth > 0 ? orbHigh * (1 + breakoutPct / 100) : na
+shortEntry = not na(rangeWidth) and rangeWidth > 0 ? orbLow  * (1 - breakoutPct / 100) : na
+
+// TP levels
+tpLong  = not na(rangeWidth) and rangeWidth > 0 ? orbHigh + profitRatio * rangeWidth : na
+tpShort = not na(rangeWidth) and rangeWidth > 0 ? orbLow  - profitRatio * rangeWidth : na
+
+// Minimum range filter (avoid tiny ORBs)
+minRange = not na(rangeWidth) and rangeWidth > 0 ? rangeWidth / orbMid > 0.001 : false
+
+// ─── ENTRY SIGNALS (for alerts) ──────────────────────────────────────────
+longSignal  = false
+shortSignal = false
+longExitSignal  = ""
+shortExitSignal = ""
+
+// ─── ENTRY LOGIC ──────────────────────────────────────────────────────────
+canEnter = (oneTradePerDay ? not tradedToday : true) and isRTH and not isORBWindow and currentTime < eodCloseTime and not na(rangeWidth) and rangeWidth > 0
+if not inLong and not inShort and minRange and canEnter
+    if close > longEntry and allowLong and (not useHtf or htfBias != -1)
+        inLong      := true
+        entryPrice  := close
+        slPrice     := orbLow          // Initial SL = opposite side of OR
+        initialSl   := orbLow          // Save initial SL for R:R display
+        tpPrice     := tpLong
+        bestPrice   := close
+        longSignal  := true
+        tradedToday := true
+
+    else if close < shortEntry and allowShort and (not useHtf or htfBias != 1)
+        inShort     := true
+        entryPrice  := close
+        slPrice     := orbHigh         // Initial SL = opposite side of OR
+        initialSl   := orbHigh         // Save initial SL for R:R display
+        tpPrice     := tpShort
+        bestPrice   := close
+        shortSignal := true
+        tradedToday := true
+
+// ─── EXIT LOGIC ───────────────────────────────────────────────────────────
+if inLong
+    bestPrice := math.max(nz(bestPrice, close), high)
+    // Trailing stop update (only tightens, never relaxes)
+    if useTrail
+        trailSl = bestPrice * (1 - trailPct / 100)
+        slPrice := math.max(nz(slPrice, 0), trailSl)
+
+    // TP hit
+    if high >= tpPrice
+        longExitSignal := "TP"
+        inLong := false
+    // SL hit (initial or trailed)
+    else if low <= slPrice
+        longExitSignal := low <= nz(initialSl, slPrice) ? "SL" : "Trail SL"
+        inLong := false
+    // EOD close
+    else if currentTime >= eodCloseTime
+        longExitSignal := "EOD"
+        inLong := false
+
+if inShort
+    bestPrice := math.min(nz(bestPrice, close), low)
+    // Trailing stop update (only tightens, never relaxes)
+    if useTrail
+        trailSl = bestPrice * (1 + trailPct / 100)
+        slPrice := math.min(nz(slPrice, 99999), trailSl)
+
+    // TP hit
+    if low <= tpPrice
+        shortExitSignal := "TP"
+        inShort := false
+    // SL hit (initial or trailed)
+    else if high >= slPrice
+        shortExitSignal := high >= nz(initialSl, slPrice) ? "SL" : "Trail SL"
+        inShort := false
+    // EOD close
+    else if currentTime >= eodCloseTime
+        shortExitSignal := "EOD"
+        inShort := false
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RISK / REWARD CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Risk and reward in points (when in position)
+float slDistancePts = na
+float tpDistancePts = na
+float riskReward   = na
+float riskDollars  = na
+float rewardDollars = na
+bool  slTrailing   = false
+
+if inLong or inShort
+    slDistancePts := math.abs(nz(slPrice) - nz(entryPrice))
+    tpDistancePts := math.abs(nz(tpPrice) - nz(entryPrice))
+    riskReward    := slDistancePts > 0 ? tpDistancePts / slDistancePts : na
+    riskDollars   := slDistancePts * pointValue * contracts
+    rewardDollars := tpDistancePts * pointValue * contracts
+    slTrailing    := not na(initialSl) and math.abs(slPrice - initialSl) > 0.01  // SL has moved from initial
+
+// Initial risk/reward (before trailing)
+float initSlDistPts = na
+float initRiskReward = na
+float initRiskDollars = na
+if inLong or inShort
+    initSlDistPts := math.abs(nz(initialSl) - nz(entryPrice))
+    initRiskReward := initSlDistPts > 0 ? tpDistancePts / initSlDistPts : na
+    initRiskDollars := initSlDistPts * pointValue * contracts
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Build alert messages with full context including SL/TP and risk
+longEntryMsg  = "ORB+HTF LONG ENTRY | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=" + str.tostring(nz(initRiskDollars, 0), "#.#") + "$" + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1" + " | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
+shortEntryMsg = "ORB+HTF SHORT ENTRY | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=" + str.tostring(nz(initRiskDollars, 0), "#.#") + "$" + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1" + " | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
+longExitMsg   = "ORB+HTF LONG EXIT | Reason=" + longExitSignal + " | Price=" + str.tostring(close, "#.##") + " | PnL≈" + str.tostring((close - nz(entryPrice[1], close)) * pointValue * contracts, "#.#") + "$"
+shortExitMsg  = "ORB+HTF SHORT EXIT | Reason=" + shortExitSignal + " | Price=" + str.tostring(close, "#.##") + " | PnL≈" + str.tostring((nz(entryPrice[1], close) - close) * pointValue * contracts, "#.#") + "$"
+
+// ─── alertcondition: dropdown-selectable alerts, static messages only ──
+// Pine requires alertcondition messages to be const strings. TradingView placeholders
+// ({{ticker}}, {{close}}, {{time}}) are substituted at fire time.
+alertcondition(longSignal,            title="ORB Long Entry",  message="ORB+HTF LONG ENTRY | {{ticker}} @ {{close}} | See chart for SL/TP")
+alertcondition(shortSignal,           title="ORB Short Entry", message="ORB+HTF SHORT ENTRY | {{ticker}} @ {{close}} | See chart for SL/TP")
+alertcondition(longExitSignal != "",  title="ORB Long Exit",   message="ORB+HTF LONG EXIT | {{ticker}} @ {{close}}")
+alertcondition(shortExitSignal != "", title="ORB Short Exit",  message="ORB+HTF SHORT EXIT | {{ticker}} @ {{close}}")
+alertcondition(longSignal or shortSignal or longExitSignal != "" or shortExitSignal != "", title="ORB Any Signal", message="ORB+HTF signal | {{ticker}} @ {{close}}")
+
+// ─── alert(): rich dynamic messages for webhooks (Discord, phone) ──
+// Setup: Add Alert → Condition = "Any alert() function call" → paste your webhook URL.
+// Every entry/exit fires with full SL/TP/risk/HTF context in the message body.
+if longSignal
+    alert(longEntryMsg,  alert.freq_once_per_bar_close)
+if shortSignal
+    alert(shortEntryMsg, alert.freq_once_per_bar_close)
+if longExitSignal != ""
+    alert(longExitMsg,   alert.freq_once_per_bar_close)
+if shortExitSignal != ""
+    alert(shortExitMsg,  alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Opening Range zone — filled band between high and low
+postOrbHigh = not na(rangeWidth) and isRTH and not isORBWindow ? orbHigh : na
+postOrbLow  = not na(rangeWidth) and isRTH and not isORBWindow ? orbLow  : na
+
+orbPlotHi = plot(postOrbHigh, "ORB High", color=not na(rangeWidth) and isRTH ? color.new(color.yellow, 30) : na, linewidth=2, style=plot.style_line)
+orbPlotLo = plot(postOrbLow,  "ORB Low",  color=not na(rangeWidth) and isRTH ? color.new(color.yellow, 30) : na, linewidth=2, style=plot.style_line)
+fill(orbPlotHi, orbPlotLo, color=not na(rangeWidth) and isRTH and not isORBWindow ? color.new(color.yellow, 90) : na, title="ORB Zone")
+
+// ORB window highlight
+bgcolor(isORBWindow and showORB ? color.new(color.yellow, 92) : na, title="ORB Window")
+
+// Entry breakout levels (thin lines just outside the ORB zone)
+plot(longEntry,  "Long Entry Level",  color=isRTH and not isORBWindow and not na(longEntry)  ? color.new(color.green, 40) : na, linewidth=1, style=plot.style_linebr)
+plot(shortEntry, "Short Entry Level", color=isRTH and not isORBWindow and not na(shortEntry) ? color.new(color.red,   40) : na, linewidth=1, style=plot.style_linebr)
+
+// SL and TP lines when in position — with risk/reward fill zones
+slPlotLong  = plot(showLevels and inLong  ? slPrice : na, "Stop Loss Long",    color=color.new(color.red,   10), linewidth=2, style=plot.style_linebr)
+slPlotShort = plot(showLevels and inShort ? slPrice : na, "Stop Loss Short",   color=color.new(color.red,   10), linewidth=2, style=plot.style_linebr)
+tpPlotLong  = plot(showLevels and inLong  ? tpPrice : na, "Take Profit Long",  color=color.new(color.green, 10), linewidth=2, style=plot.style_linebr)
+tpPlotShort = plot(showLevels and inShort ? tpPrice : na, "Take Profit Short", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebr)
+
+// Entry price line (when in position)
+entryPlotLong  = plot(showLevels and inLong  ? entryPrice : na, "Entry Long",  color=color.new(color.white, 50), linewidth=1, style=plot.style_linebr)
+entryPlotShort = plot(showLevels and inShort ? entryPrice : na, "Entry Short", color=color.new(color.white, 50), linewidth=1, style=plot.style_linebr)
+
+// Risk zone (entry→SL) in red, reward zone (entry→TP) in green
+fill(entryPlotLong,  slPlotLong,  color=showLevels and inLong  ? color.new(color.red,   90) : na, title="Risk Zone Long")
+fill(entryPlotLong,  tpPlotLong,  color=showLevels and inLong  ? color.new(color.green, 92) : na, title="Reward Zone Long")
+fill(entryPlotShort, slPlotShort, color=showLevels and inShort ? color.new(color.red,   90) : na, title="Risk Zone Short")
+fill(entryPlotShort, tpPlotShort, color=showLevels and inShort ? color.new(color.green, 92) : na, title="Reward Zone Short")
+
+// Initial SL for comparison when trail has moved it
+plot(showLevels and inLong  and slTrailing ? initialSl : na, "Initial SL Long",  color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
+plot(showLevels and inShort and slTrailing ? initialSl : na, "Initial SL Short", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
+
+// HTF bias arrow (shown at start of each day)
+plotshape(showHTF and useHtf and htfBias == 1 and isNewDay, "HTF Bull", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(showHTF and useHtf and htfBias == -1 and isNewDay, "HTF Bear", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+
+// Position markers on chart
+plotshape(longSignal,  "Long Entry Marker",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.normal)
+plotshape(shortSignal, "Short Entry Marker",  style=shape.triangledown, location=location.abovebar, color=color.red, size=size.normal)
+plotshape(longExitSignal != "",  "Long Exit Marker",  style=shape.xcross, location=location.abovebar, color=color.orange, size=size.small)
+plotshape(shortExitSignal != "", "Short Exit Marker", style=shape.xcross, location=location.belowbar, color=color.orange, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD TABLE — MAIN PANEL (top-right)
+// ══════════════════════════════════════════════════════════════════════════════
+
+if showDash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 20, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
+    
+    // ─ Header ─
+    table.cell(dash, 0, 0, "ORB+HTF",          text_color=color.white, text_size=size.normal)
+    table.cell(dash, 1, 0, "MNQ/NQ 5m",        text_color=color.gray, text_size=size.small)
+    
+    // ─ Session Phase ─
+    table.cell(dash, 0, 1, "Session",            text_color=color.white, text_size=size.small)
+    phaseColor = sessionPhase == "🟢 Active Trading" ? color.green : sessionPhase == "🔴 Past EOD Close" ? color.red : sessionPhase == "ORB Window ⏳" ? color.orange : color.gray
+    table.cell(dash, 1, 1, sessionPhase,        text_color=phaseColor, text_size=size.small)
+    
+    // ─ Trading Window ─
+    table.cell(dash, 0, 2, "Trade Window",       text_color=color.white, text_size=size.small)
+    eodH = int(eodCloseTime / 100)
+    eodM = eodCloseTime % 100
+    windowStr = str.tostring(sessStartH) + ":" + (sessStartM < 10 ? "0" : "") + str.tostring(sessStartM) + "–" + str.tostring(eodH) + ":" + (eodM < 10 ? "0" : "") + str.tostring(eodM) + " ET"
+    table.cell(dash, 1, 2, windowStr,           text_color=canEnter ? color.green : color.gray, text_size=size.small)
+    
+    // ─ Entries Allowed ─
+    table.cell(dash, 0, 3, "Entries",            text_color=color.white, text_size=size.small)
+    entryBlockReason = oneTradePerDay and tradedToday ? "✗ 1/DAY USED" : "✗ FILTERED"
+    entryStatus = canEnter and (allowLong or allowShort) ? (canEnter and allowLong and allowShort ? "✓ LONG & SHORT" : canEnter and allowLong ? "✓ LONG ONLY" : "✓ SHORT ONLY") : entryBlockReason
+    entryColor = canEnter and (allowLong or allowShort) ? color.green : color.red
+    table.cell(dash, 1, 3, entryStatus,          text_color=entryColor, text_size=size.small)
+    
+    // ─ Position ─
+    table.cell(dash, 0, 4, "Position",           text_color=color.white, text_size=size.small)
+    posText = inLong ? "LONG ▲" : inShort ? "SHORT ▼" : "FLAT"
+    posColor = inLong ? color.green : inShort ? color.red : color.gray
+    table.cell(dash, 1, 4, posText,              text_color=posColor, text_size=size.small)
+    
+    // ─ HTF Bias ─
+    table.cell(dash, 0, 5, "HTF Bias",           text_color=color.white, text_size=size.small)
+    biasText = htfBias == 1 ? "BULL ▲" : htfBias == -1 ? "BEAR ▼" : "NEUTRAL ◆"
+    biasColor = htfBias == 1 ? color.green : htfBias == -1 ? color.red : color.gray
+    table.cell(dash, 1, 5, biasText,             text_color=biasColor, text_size=size.small)
+    
+    // ─ Up Streak ─
+    table.cell(dash, 0, 6, "Up Streak",          text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 6, str.tostring(upDayCount), text_color=upDayCount >= 2 ? color.orange : color.white, text_size=size.small)
+    
+    // ─ OR Range ─
+    table.cell(dash, 0, 7, "OR Range",           text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 7, not na(rangeWidth) ? str.tostring(rangeWidth, "#.##") : "—", text_color=color.yellow, text_size=size.small)
+    
+    // ─ Allow Long / Short ─
+    table.cell(dash, 0, 8, "Allow Long",         text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 8, allowLong ? "✓" : "✗", text_color=allowLong ? color.green : color.red, text_size=size.small)
+    
+    table.cell(dash, 0, 9, "Allow Short",        text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 9, allowShort ? "✓" : "✗", text_color=allowShort ? color.green : color.red, text_size=size.small)
+    
+    // ─ Strategy Params ─
+    table.cell(dash, 0, 10, "TP Ratio",           text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(profitRatio, "#.#") + "×", text_color=color.white, text_size=size.small)
+    
+    table.cell(dash, 0, 11, "Trail %",           text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 11, str.tostring(trailPct, "#.#") + "%", text_color=color.white, text_size=size.small)
+    
+    // ─ Time remaining ─
+    sessionMinLeft = math.max(0, (16 * 60 + 0) - currentMinutes)
+    table.cell(dash, 0, 12, "Session Left",       text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 12, str.tostring(int(sessionMinLeft / 60)) + "h " + str.tostring(sessionMinLeft % 60) + "m", text_color=sessionMinLeft < 30 ? color.orange : color.white, text_size=size.small)
+
+    // ─ SL/TP & Risk Details (when in position) ─
+    rowOffset = 13
+
+    if inLong or inShort
+        // Entry price
+        table.cell(dash, 0, rowOffset, "Entry",       text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, rowOffset, str.tostring(nz(entryPrice, 0), "#.##"), text_color=color.yellow, text_size=size.small)
+        
+        // Current SL (may be trailed from initial)
+        table.cell(dash, 0, rowOffset + 1, slTrailing ? "SL (trailed)" : "SL (initial)", text_color=color.white, text_size=size.small)
+        slColor = slTrailing ? color.orange : color.red
+        table.cell(dash, 1, rowOffset + 1, str.tostring(nz(slPrice, 0), "#.##"), text_color=slColor, text_size=size.small)
+        
+        // Show initial SL separately if trail has moved it
+        slShowRow = slTrailing ? rowOffset + 3 : rowOffset + 2
+        if slTrailing
+            table.cell(dash, 0, rowOffset + 2, "Initial SL",    text_color=color.gray, text_size=size.tiny)
+            table.cell(dash, 1, rowOffset + 2, str.tostring(nz(initialSl, 0), "#.##"), text_color=color.new(color.red, 40), text_size=size.tiny)
+        
+        // TP target
+        table.cell(dash, 0, slShowRow, "TP Target",       text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, slShowRow, str.tostring(nz(tpPrice, 0), "#.##"), text_color=color.green, text_size=size.small)
+        
+        // Risk in $ (initial SL distance)
+        table.cell(dash, 0, slShowRow + 1, "Risk $" + str.tostring(contracts, "#") + "ct", text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, slShowRow + 1, "$" + str.tostring(nz(initRiskDollars, 0), "#.#"), text_color=color.red, text_size=size.small)
+        
+        // Reward in $
+        table.cell(dash, 0, slShowRow + 2, "Reward $" + str.tostring(contracts, "#") + "ct", text_color=color.white, text_size=size.small)
+        table.cell(dash, 1, slShowRow + 2, "$" + str.tostring(nz(rewardDollars, 0), "#.#"), text_color=color.green, text_size=size.small)
+        
+    else
+        // When flat, show OR levels if set
+        if not na(rangeWidth) and isRTH and not isORBWindow
+            table.cell(dash, 0, rowOffset, "OR High",       text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset, str.tostring(orbHigh, "#.##"), text_color=color.yellow, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 1, "OR Low",        text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 1, str.tostring(orbLow, "#.##"), text_color=color.yellow, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 2, "Potential Risk",  text_color=color.white, text_size=size.small)
+            potRiskPts = rangeWidth  // SL distance ≈ range width
+            potRiskDol = potRiskPts * pointValue * contracts
+            table.cell(dash, 1, rowOffset + 2, "$" + str.tostring(potRiskDol, "#.#") + " (" + str.tostring(potRiskPts, "#.#") + " pts)", text_color=color.new(color.red, 30), text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PNL TRACKING (bottom-right stats bar)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float cumPnl = 0.0
+var int   tradeCount = 0
+var int   winCount = 0
+
+// Detect exits
+justExitedLong  = inLong[1] and not inLong
+justExitedShort = inShort[1] and not inShort
+
+if justExitedLong and not na(entryPrice[1])
+    tradePnl = close - nz(entryPrice[1], close)
+    cumPnl := cumPnl + tradePnl
+    tradeCount := tradeCount + 1
+    if tradePnl > 0
+        winCount := winCount + 1
+
+if justExitedShort and not na(entryPrice[1])
+    tradePnl = nz(entryPrice[1], close) - close
+    cumPnl := cumPnl + tradePnl
+    tradeCount := tradeCount + 1
+    if tradePnl > 0
+        winCount := winCount + 1
+
+// Show session stats in info bar
+if showDash and barstate.islast and tradeCount > 0
+    var table stats = table.new(position.bottom_right, 2, 4, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.new(color.gray, 60))
+    table.cell(stats, 0, 0, "Trades",       text_color=color.white, text_size=size.tiny)
+    table.cell(stats, 1, 0, str.tostring(tradeCount), text_color=color.white, text_size=size.tiny)
+    table.cell(stats, 0, 1, "Win Rate",       text_color=color.white, text_size=size.tiny)
+    table.cell(stats, 1, 1, str.tostring(winCount * 100 / tradeCount, "#") + "%", text_color=color.white, text_size=size.tiny)
+    table.cell(stats, 0, 2, "Cum PnL",        text_color=color.white, text_size=size.tiny)
+    cumPnlDollars = cumPnl * pointValue * contracts
+    table.cell(stats, 1, 2, "$" + str.tostring(cumPnlDollars, "#.#"), text_color=cumPnlDollars >= 0 ? color.green : color.red, text_size=size.tiny)
+    table.cell(stats, 0, 3, "Avg PnL",        text_color=color.white, text_size=size.tiny)
+    avgDollars = cumPnlDollars / tradeCount
+    table.cell(stats, 1, 3, "$" + str.tostring(avgDollars, "#.#") + "/trade", text_color=avgDollars >= 0 ? color.green : color.red, text_size=size.tiny)
