@@ -311,17 +311,28 @@ if inLong or inShort
 // ALERTS
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Build alert messages with full context including SL/TP and risk
+// Build dynamic alert() messages with full context including SL/TP and risk
 longEntryMsg  = "ORB+HTF LONG ENTRY | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=" + str.tostring(nz(initRiskDollars, 0), "#.#") + "$" + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1" + " | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
 shortEntryMsg = "ORB+HTF SHORT ENTRY | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=" + str.tostring(nz(initRiskDollars, 0), "#.#") + "$" + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1" + " | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
 longExitMsg   = "ORB+HTF LONG EXIT | Reason=" + longExitSignal + " | Price=" + str.tostring(close, "#.##") + " | PnL≈" + str.tostring((close - nz(entryPrice[1], close)) * pointValue * contracts, "#.#") + "$"
 shortExitMsg  = "ORB+HTF SHORT EXIT | Reason=" + shortExitSignal + " | Price=" + str.tostring(close, "#.##") + " | PnL≈" + str.tostring((nz(entryPrice[1], close) - close) * pointValue * contracts, "#.#") + "$"
 
-alertcondition(longSignal,           title="ORB Long Entry",    message=longEntryMsg)
-alertcondition(shortSignal,          title="ORB Short Entry",   message=shortEntryMsg)
-alertcondition(longExitSignal != "",  title="ORB Long Exit",     message=longExitMsg)
-alertcondition(shortExitSignal != "", title="ORB Short Exit",    message=shortExitMsg)
+// TradingView alertcondition() requires a const string message, so keep these static.
+alertcondition(longSignal,            title="ORB Long Entry",   message="ORB+HTF LONG ENTRY | See chart/dashboard for live SL/TP/risk details")
+alertcondition(shortSignal,           title="ORB Short Entry",  message="ORB+HTF SHORT ENTRY | See chart/dashboard for live SL/TP/risk details")
+alertcondition(longExitSignal != "",  title="ORB Long Exit",    message="ORB+HTF LONG EXIT | See chart/dashboard for exit details")
+alertcondition(shortExitSignal != "", title="ORB Short Exit",   message="ORB+HTF SHORT EXIT | See chart/dashboard for exit details")
 alertcondition(longSignal or shortSignal or longExitSignal != "" or shortExitSignal != "", title="ORB Any Signal", message="ORB+HTF signal fired")
+
+// For rich per-signal messages, create a TradingView alert using: Any alert() function call
+if longSignal
+    alert(longEntryMsg, alert.freq_once_per_bar_close)
+if shortSignal
+    alert(shortEntryMsg, alert.freq_once_per_bar_close)
+if longExitSignal != ""
+    alert(longExitMsg, alert.freq_once_per_bar_close)
+if shortExitSignal != ""
+    alert(shortExitMsg, alert.freq_once_per_bar_close)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PLOTTING
