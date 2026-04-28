@@ -120,15 +120,16 @@ else if not isRTH and currentTime >= sessEnd
 // HTF BIAS (1h EMA slope from request.security)
 // ══════════════════════════════════════════════════════════════════════════════
 
-htfEmaFast = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1))
-htfEmaSlow = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2))
-htfSlopeFast = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1) - ta.ema(close, htfLen1)[1])
+// Use confirmed hourly bars to avoid repaint.
+htfEmaFast   = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1)[1], lookahead=barmerge.lookahead_off)
+htfEmaSlow   = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2)[1], lookahead=barmerge.lookahead_off)
+htfSlopeFast = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen1)[1] - ta.ema(close, htfLen1)[2], lookahead=barmerge.lookahead_off)
+htfSlopeSlow = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2)[1] - ta.ema(close, htfLen2)[2], lookahead=barmerge.lookahead_off)
 
 var int htfBias = 0  // +1 = bullish, -1 = bearish, 0 = neutral
 
 if useHtf
     if htfMode == "slope"
-        htfSlopeSlow = request.security(syminfo.tickerid, "60", ta.ema(close, htfLen2) - ta.ema(close, htfLen2)[1])
         htfBias := htfSlopeFast > 0 and htfSlopeSlow > 0 ? 1 : htfSlopeFast < 0 and htfSlopeSlow < 0 ? -1 : 0
     else  // ema_cross
         htfBias := htfEmaFast > htfEmaSlow ? 1 : htfEmaFast < htfEmaSlow ? -1 : 0
@@ -140,11 +141,12 @@ else
 // ══════════════════════════════════════════════════════════════════════════════
 
 var int upDayCount = 0
-dailyClose = request.security(syminfo.tickerid, "D", close)
-dailyOpenD = request.security(syminfo.tickerid, "D", open)
+// Use confirmed daily bars to avoid repaint in the streak filter.
+dailyClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_off)
+dailyOpenD = request.security(syminfo.tickerid, "D", open[1], lookahead=barmerge.lookahead_off)
 
 if isNewDay
-    if dailyClose[1] > dailyOpenD[1]
+    if dailyClose > dailyOpenD
         upDayCount := upDayCount + 1
     else
         upDayCount := 0
