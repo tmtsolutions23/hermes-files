@@ -259,7 +259,7 @@
             • Short irons/wedges (< 100y): 1y per 4ft elevation<br>
             • Mid irons (100-170y): 1y per 3ft elevation<br>
             • Long irons/woods (> 170y): 1y per 2.5ft elevation<br>
-            • Downhill = subtract yards BUT reduce rollout<br>
+            • Downhill = subtract carry and usually increase rollout<br>
             • Ball goes proportionally further downhill
           </div>
         </div>
@@ -269,15 +269,15 @@
             <b>📐 Calculation Formulas:</b><br><br>
             <b>Wind Scaling (non-linear):</b><br>
             distScale uses stepped curve fitting community data:<br>
-            &lt;60y: 0.35x | 60-100y: 0.65x | 100-150y: 0.85→1.0x<br>
-            150-200y: 1.0→1.2x | &gt;200y: 1.2→1.5x<br><br>
-            <b>Headwind:</b> mph × cos(θ) × 1.35 × distScale<br>
-            <b>Tailwind:</b> mph × cos(θ) × 0.75 × distScale<br>
-            <b>Crosswind:</b> mph × sin(θ) × 1.05 × distScale × sideMult<br><br>
-            <b>Lie Penalty:</b> applied as carry % reduction<br>
-            <b>Shot Type:</b> modifies trajectory height → wind multiplier<br>
+            &lt;60y: 0.35x | 60-80y: 0.50x | 80-100y: 0.65x | 100-130y: 0.85x<br>
+            130-170y: 1.00x | 170-200y: 1.10x | 200-230y: 1.25x | 230y+: 1.40x<br><br>
+            <b>Headwind:</b> mph × cos(θ) × 1.35 × distScale × shotMult<br>
+            <b>Tailwind:</b> mph × cos(θ) × 0.75 × distScale × shotMult<br>
+            <b>Crosswind:</b> mph × sin(θ) × distScale × shotMult × sideMult × spinMult × clubLatMult<br><br>
+            <b>Lie Penalty:</b> required carry = (yardage + wind + elevation) ÷ (1 - liePenalty)<br>
+            <b>Shot Type wind mult:</b> Full 1.00 | Punch 0.65 | Pitch 0.85 | Flop 1.30 | Chip 0.40<br>
             <b>Elevation:</b> club-dependent (1y/4ft, 1y/3ft, 1y/2.5ft)<br>
-            <b>Rollout:</b> base × firmness × spin × lie × downhill modifier
+            <b>Rollout:</b> base × firmness × spin × shot × lie × downhill/uphill modifier
           </div>
         </div>
       </section>
@@ -451,6 +451,11 @@ function getLieRolloutMod(lie) {
   return mods[lie] || 1.0;
 }
 
+function getLieCarryMult(lie) {
+  const penalty = getLiePenalty(lie);
+  return penalty >= 1 ? Infinity : 1 / (1 - penalty);
+}
+
 // ── SHOT TYPE: Trajectory height multiplier ──
 function getShotWindMult(shotType) {
   // Higher trajectory = more wind effect
@@ -493,6 +498,42 @@ function getFirmnessMult(firmness) {
   return mults[firmness] || 1.0;
 }
 
+function computeCarryTarget(yardage, elevationFt, windTotal, windAngle, windDir, shotType, clubType, liePen) {
+  const distScale = getDistScale(yardage);
+  const theta = windAngle * Math.PI / 180;
+  const longComp = windTotal * Math.cos(theta);
+  const shotWindMult = getShotWindMult(shotType);
+
+  let windAdj = 0;
+  if (windDir === 'helping') {
+    windAdj = (-0.75 * longComp) * distScale * shotWindMult;
+  } else {
+    windAdj = (1.35 * longComp) * distScale * shotWindMult;
+  }
+
+  if (elevationFt < 0 && windDir === 'hurting') windAdj *= 1.08;
+  if (elevationFt > 0 && windDir === 'helping') windAdj *= 0.92;
+
+  const elevPerYd = getElevPerYard(yardage, clubType);
+  let elevAdj = Math.abs(elevationFt) * elevPerYd;
+  if (elevationFt < 0) elevAdj = -elevAdj;
+
+  const baseTarget = yardage + windAdj + elevAdj;
+  const lieCarryMult = liePen >= 1 ? Infinity : 1 / (1 - liePen);
+
+  return {
+    distScale,
+    theta,
+    longComp,
+    shotWindMult,
+    windAdj,
+    elevAdj,
+    baseTarget,
+    lieCarryMult,
+    adjustedCarry: baseTarget * lieCarryMult
+  };
+}
+
 // ── MAIN COMPUTE ──
 // Track auto-mode vs manual club selection
 let _autoMode = true;
@@ -519,33 +560,16 @@ function compute() {
   let selectedClub, clubType, baseRollout, typeForLateral;
 
   if (_autoMode && clubVal === 'auto') {
-    // Pre-compute target carry for club matching
-    const preElevPerYd = 1/3; // default iron
-    const preDistScale = getDistScale(yardage);
-    const preTheta = windAngle * Math.PI / 180;
-    const preLongComp = windTotal * Math.cos(preTheta);
-    const preShotWindMult = getShotWindMult(shotType);
-    let preWindAdj = 0;
-    if (windDir === 'helping') {
-      preWindAdj = (-0.75 * preLongComp) * preDistScale * preShotWindMult;
-    } else {
-      preWindAdj = (1.35 * preLongComp) * preDistScale * preShotWindMult;
-    }
-    if (elevationFt < 0 && windDir === 'hurting') preWindAdj *= 1.08;
-    if (elevationFt > 0 && windDir === 'helping') preWindAdj *= 0.92;
-    let preElevAdj = Math.abs(elevationFt) * preElevPerYd;
-    if (elevationFt < 0) preElevAdj = -preElevAdj;
-    const targetCarry = yardage + preWindAdj + preElevAdj - (yardage * liePen);
-
-    // Find closest club that can reach (prefer minimal over-clubbing)
+    // Pre-compute target carry per club type for club matching
     let bestClub = null;
     let bestDiff = Infinity;
     for (const key of Object.keys(MY_CLUBS)) {
       const club = MY_CLUBS[key];
+      const targetCarry = computeCarryTarget(yardage, elevationFt, windTotal, windAngle, windDir, shotType, club.cat, liePen).adjustedCarry;
       const diff = club.carry - targetCarry;
       if (diff >= 0 && diff < bestDiff) {
         bestDiff = diff;
-        bestClub = { key, ...club };
+        bestClub = { key, targetCarry, ...club };
       }
     }
     // If no club reaches, pick the longest
@@ -554,7 +578,9 @@ function compute() {
       for (const key of Object.keys(MY_CLUBS)) {
         if (MY_CLUBS[key].carry > maxCarry) {
           maxCarry = MY_CLUBS[key].carry;
-          bestClub = { key, ...MY_CLUBS[key] };
+          const club = MY_CLUBS[key];
+          const targetCarry = computeCarryTarget(yardage, elevationFt, windTotal, windAngle, windDir, shotType, club.cat, liePen).adjustedCarry;
+          bestClub = { key, targetCarry, ...club };
         }
       }
     }
@@ -566,7 +592,7 @@ function compute() {
 
     // Don't change dropdown — keep it on "auto" so it re-evaluates next time
     clubSelect.value = 'auto';
-    const powerPct = Math.round((targetCarry / bestClub.carry) * 100);
+    const powerPct = Math.round((bestClub.targetCarry / bestClub.carry) * 100);
     document.getElementById('clubHint').textContent =
       `⚡ Auto → ${bestClub.name} (carry ${bestClub.carry}y, ~${Math.min(powerPct,100)}% power)`;
   } else {
@@ -586,50 +612,30 @@ function compute() {
     rolloutInput.value = baseRollout;
   }
 
-  // ── 1. DISTANCE SCALING (non-linear) ──
-  const distScale = getDistScale(yardage);
+  // ── 1. DISTANCE SCALING / REQUIRED CARRY ──
+  const carryTarget = computeCarryTarget(yardage, elevationFt, windTotal, windAngle, windDir, shotType, clubType, liePen);
+  const distScale = carryTarget.distScale;
+  const windAdj = carryTarget.windAdj;
+  const elevAdj = carryTarget.elevAdj;
+  const adjustedCarry = carryTarget.adjustedCarry;
 
   // ── 2. ELEVATION (club-dependent) ──
-  const elevPerYd = getElevPerYard(yardage, clubType);
-  let elevAdj = Math.abs(elevationFt) * elevPerYd;
-  if (elevationFt < 0) elevAdj = -elevAdj; // downhill = subtract
   // Downhill also increases rollout
   let downhillRolloutBoost = elevationFt < 0 ? 1 + (Math.abs(elevationFt) * 0.005) : 1.0;
   // Uphill reduces rollout
   let uphillRolloutReduce = elevationFt > 0 ? 1 - (elevationFt * 0.003) : 1.0;
 
   // ── 3. WIND COMPONENTS ──
-  const theta = windAngle * Math.PI / 180;
-  const longComp = windTotal * Math.cos(theta);
+  const theta = carryTarget.theta;
   const sideComp = windTotal * Math.sin(theta);
-  const shotWindMult = getShotWindMult(shotType);
-
-  // ── 4. HEADWIND/TAILWIND (asymmetric + distance scaling) ──
-  let windAdj = 0;
-  if (windDir === 'helping') {
-    // Tailwind: less effect per mph (0.75 vs 1.35 for headwind)
-    windAdj = (-0.75 * longComp) * distScale * shotWindMult;
-  } else {
-    // Headwind: more effect per mph
-    windAdj = (1.35 * longComp) * distScale * shotWindMult;
-  }
-
-  // Elevation + wind interaction: downhill into headwind = more wind effect
-  if (elevationFt < 0 && windDir === 'hurting') {
-    windAdj *= 1.08; // 8% more wind effect when downhill into headwind
-  }
-  if (elevationFt > 0 && windDir === 'helping') {
-    windAdj *= 0.92; // 8% less tailwind effect going uphill
-  }
+  const shotWindMult = carryTarget.shotWindMult;
 
   // ── 5. LIE PENALTY ──
   const lieRollMod = getLieRolloutMod(lieSelect);
-  const carryAfterLie = yardage * (1 - liePen);
+  const lieCarryMult = getLieCarryMult(lieSelect);
 
   // ── 6. TOTAL ADJUSTMENT ──
-  const totalAdj = windAdj + elevAdj;
-  // Apply adjustments to the post-lie carry
-  const adjustedCarry = carryAfterLie + totalAdj;
+  const totalAdj = adjustedCarry - yardage;
 
   // ── 7. ROLLOUT CALCULATION ──
   const spinRollMod = getSpinRolloutMod(spinType);
@@ -673,8 +679,7 @@ function compute() {
   document.getElementById('kpiElev').className = 'value ' + (elevAdj > 0 ? 'pos' : elevAdj < 0 ? 'neg' : '');
   document.getElementById('kpiLie').textContent = '-' + Math.round(liePen * 100) + '%';
   document.getElementById('kpiLie').className = 'value ' + (liePen > 0 ? 'neg' : '');
-  const totalWithLie = totalAdj - (yardage * liePen);
-  document.getElementById('kpiTotal').textContent = fmt(totalWithLie);
+  document.getElementById('kpiTotal').textContent = fmt(totalAdj);
   document.getElementById('kpiTotal').className = 'value';
 
   document.getElementById('carryToPin').textContent = `${round1(adjustedCarry)} y`;
@@ -691,7 +696,7 @@ function compute() {
   document.getElementById('noteSide').textContent = `Lateral: ${round1(Math.abs(lateralAim))}y`;
   document.getElementById('noteSide').className = 'pill ' + (Math.abs(lateralAim) > 5 ? 'bad' : '');
   document.getElementById('noteScaling').textContent = `Wind scaling: ${round1(distScale)}x`;
-  document.getElementById('noteLie').textContent = `Lie penalty: -${Math.round(liePen*100)}%`;
+  document.getElementById('noteLie').textContent = `Lie carry loss: -${Math.round(liePen*100)}%`;
   document.getElementById('noteLie').className = 'pill ' + (liePen > 0.1 ? 'bad' : liePen > 0 ? 'warn' : '');
   document.getElementById('noteShot').textContent = `${shotType.charAt(0).toUpperCase() + shotType.slice(1)} shot`;
   document.getElementById('noteGust').textContent = `Gust: ${gustLow}–${gustHigh} mph`;
@@ -707,9 +712,10 @@ function compute() {
 
   // ── PRO TIPS ──
   let tips = [];
-  if (liePen >= 0.4) tips.push('🚨 Greenside bunker! Consider laying up or adding 40% to your carry.');
-  if (liePen >= 0.2 && liePen < 0.4) tips.push('⚠️ Heavy rough — expect 20% less carry and very little rollout.');
-  if (liePen > 0 && liePen < 0.2) tips.push('📍 Rough/fairway bunker lie — distance penalty applied.');
+  const extraCarryPct = Math.round((lieCarryMult - 1) * 100);
+  if (liePen >= 0.4) tips.push(`🚨 Greenside bunker! You need about ${extraCarryPct}% more carry than a clean lie.`);
+  if (liePen >= 0.2 && liePen < 0.4) tips.push(`⚠️ Heavy rough — expect ${Math.round(liePen * 100)}% less strike carry, which means about ${extraCarryPct}% more required carry.`);
+  if (liePen > 0 && liePen < 0.2) tips.push(`📍 Rough/fairway bunker lie — club up. This lie needs about ${extraCarryPct}% more carry.`);
   if (Math.abs(windAdj) > 15) tips.push('💨 Heavy wind impact — club up/down accordingly.');
   if (shotType === 'flop' && windTotal > 8) tips.push('🌀 Flop in wind is risky — wind effect +30%. Consider lower shot.');
   if (shotType === 'punch') tips.push('🔽 Punch shot: low trajectory reduces wind effect by 35%.');
