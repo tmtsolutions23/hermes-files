@@ -86,19 +86,22 @@ showLevels   = input.bool(true,    "Show SL/TP Lines on Chart", group=group_visu
 showDash     = input.bool(true,    "Show Dashboard Panel", group=group_visual)
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SESSION TIME HELPERS (Exchange timezone = US/Eastern)
+// SESSION TIME HELPERS (explicit New York time for RTH / ORB logic)
 // ══════════════════════════════════════════════════════════════════════════════
 
-isNewDay = ta.change(time("D")) != 0
+TZ = "America/New_York"
+isNewDay = ta.change(time("D", "", TZ)) != 0
 sessStart = sessStartH * 100 + sessStartM
 sessEnd   = 1600  // 4:00 PM ET
 
-// Time in minutes from midnight
-currentMinutes = hour * 60 + minute
+// Time in minutes from midnight in New York time
+nyHour   = hour(time, TZ)
+nyMinute = minute(time, TZ)
+currentMinutes = nyHour * 60 + nyMinute
 orbStartMin = (sessStart / 100) * 60 + sessStart % 100  // e.g., 9*60+30=570
 orbEndMin   = orbStartMin + orbBars * timeframe.in_seconds() / 60  // e.g., 570+20=590
 
-currentTime = hour * 100 + minute
+currentTime = nyHour * 100 + nyMinute
 isRTH       = currentTime >= sessStart and currentTime < sessEnd
 isORBWindow = currentMinutes >= orbStartMin and currentMinutes < orbEndMin
 eodCloseTime = sessEnd - closeBefore  // e.g., 1600 - 10 = 1550
