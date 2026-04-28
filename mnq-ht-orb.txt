@@ -318,13 +318,22 @@ if inLong or inShort
     initRiskReward := initSlDistPts > 0 ? tpDistancePts / initSlDistPts : na
     initRiskDollars := initSlDistPts * pointValue * positionContracts
 
-longEntryMsg  = "ORB+HTF LONG ENTRY | Contracts=" + str.tostring(positionContracts) + " | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=$" + str.tostring(nz(initRiskDollars, 0), "#.#") + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1 | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
-shortEntryMsg = "ORB+HTF SHORT ENTRY | Contracts=" + str.tostring(positionContracts) + " | Price=" + str.tostring(close, "#.##") + " | SL=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Risk=$" + str.tostring(nz(initRiskDollars, 0), "#.#") + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1 | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
+plannedLongEntry = longEntry
+plannedLongSl = orbLow
+plannedLongTp = tpLong
+plannedShortEntry = shortEntry
+plannedShortSl = orbHigh
+plannedShortTp = tpShort
+plannedLongRiskDollars = not na(plannedLongEntry) and not na(plannedLongSl) ? math.abs(plannedLongEntry - plannedLongSl) * pointValue * activeContracts : na
+plannedShortRiskDollars = not na(plannedShortEntry) and not na(plannedShortSl) ? math.abs(plannedShortEntry - plannedShortSl) * pointValue * activeContracts : na
+
+longEntryMsg  = "ORB+HTF LONG SIGNAL | Trigger=" + str.tostring(nz(longEntry, 0), "#.##") + " | Entry Fill=" + str.tostring(nz(entryPrice, close), "#.##") + " | Stop=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP Limit=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Contracts=" + str.tostring(positionContracts) + " | Risk=$" + str.tostring(nz(initRiskDollars, 0), "#.#") + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1 | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
+shortEntryMsg = "ORB+HTF SHORT SIGNAL | Trigger=" + str.tostring(nz(shortEntry, 0), "#.##") + " | Entry Fill=" + str.tostring(nz(entryPrice, close), "#.##") + " | Stop=" + str.tostring(nz(slPrice, 0), "#.##") + " | TP Limit=" + str.tostring(nz(tpPrice, 0), "#.##") + " | Contracts=" + str.tostring(positionContracts) + " | Risk=$" + str.tostring(nz(initRiskDollars, 0), "#.#") + " | R:R=" + str.tostring(nz(initRiskReward, 0), "#.#") + ":1 | HTF=" + (htfBias == 1 ? "BULL" : htfBias == -1 ? "BEAR" : "NEUT")
 longExitMsg   = "ORB+HTF LONG EXIT | Reason=" + lastExitReason + " | Price=" + str.tostring(nz(lastExitPrice, close), "#.##") + " | PnL=$" + str.tostring(nz(lastRealizedPnlDollars, 0), "#.#")
 shortExitMsg  = "ORB+HTF SHORT EXIT | Reason=" + lastExitReason + " | Price=" + str.tostring(nz(lastExitPrice, close), "#.##") + " | PnL=$" + str.tostring(nz(lastRealizedPnlDollars, 0), "#.#")
 
-alertcondition(longSignal,            title="ORB Long Entry",  message="ORB+HTF LONG ENTRY | {{ticker}} @ {{close}} | See chart for SL/TP")
-alertcondition(shortSignal,           title="ORB Short Entry", message="ORB+HTF SHORT ENTRY | {{ticker}} @ {{close}} | See chart for SL/TP")
+alertcondition(longSignal,            title="ORB Long Entry",  message="ORB+HTF LONG SIGNAL | Check dashboard for trigger, stop, and TP limit")
+alertcondition(shortSignal,           title="ORB Short Entry", message="ORB+HTF SHORT SIGNAL | Check dashboard for trigger, stop, and TP limit")
 alertcondition(longExitSignal != "",  title="ORB Long Exit",   message="ORB+HTF LONG EXIT | {{ticker}} @ {{close}}")
 alertcondition(shortExitSignal != "", title="ORB Short Exit",  message="ORB+HTF SHORT EXIT | {{ticker}} @ {{close}}")
 alertcondition(longSignal or shortSignal or longExitSignal != "" or shortExitSignal != "", title="ORB Any Signal", message="ORB+HTF signal | {{ticker}} @ {{close}}")
@@ -374,7 +383,7 @@ plotshape(longExitSignal != "",  "Long Exit Marker",  style=shape.xcross, locati
 plotshape(shortExitSignal != "", "Short Exit Marker", style=shape.xcross, location=location.belowbar, color=color.orange, size=size.small)
 
 if showDash and barstate.islast
-    var table dash = table.new(position.top_right, 2, 20, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
+    var table dash = table.new(position.top_right, 2, 24, bgcolor=color.new(color.black, 20), border_width=1, border_color=color.new(color.gray, 50))
     table.cell(dash, 0, 0, "ORB+HTF",          text_color=color.white, text_size=size.normal)
     table.cell(dash, 1, 0, "MNQ/NQ 5m",        text_color=color.gray, text_size=size.small)
     table.cell(dash, 0, 1, "Session",            text_color=color.white, text_size=size.small)
@@ -438,14 +447,22 @@ if showDash and barstate.islast
         table.cell(dash, 1, slShowRow + 2, "$" + str.tostring(nz(rewardDollars, 0), "#.#"), text_color=color.green, text_size=size.small)
     else
         if not na(rangeWidth) and isRTH and not isORBWindow
-            table.cell(dash, 0, rowOffset, "OR High",       text_color=color.white, text_size=size.small)
-            table.cell(dash, 1, rowOffset, str.tostring(orbHigh, "#.##"), text_color=color.yellow, text_size=size.small)
-            table.cell(dash, 0, rowOffset + 1, "OR Low",        text_color=color.white, text_size=size.small)
-            table.cell(dash, 1, rowOffset + 1, str.tostring(orbLow, "#.##"), text_color=color.yellow, text_size=size.small)
-            table.cell(dash, 0, rowOffset + 2, "Potential Risk",  text_color=color.white, text_size=size.small)
-            potRiskPts = rangeWidth
-            potRiskDol = potRiskPts * pointValue * activeContracts
-            table.cell(dash, 1, rowOffset + 2, "$" + str.tostring(potRiskDol, "#.#") + " (" + str.tostring(potRiskPts, "#.#") + " pts @ " + str.tostring(activeContracts) + "ct)", text_color=color.new(color.red, 30), text_size=size.small)
+            table.cell(dash, 0, rowOffset, "Long Trigger",       text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset, allowLong ? str.tostring(plannedLongEntry, "#.##") : "BLOCKED", text_color=allowLong ? color.green : color.red, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 1, "Long Stop",        text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 1, allowLong ? str.tostring(plannedLongSl, "#.##") : "—", text_color=color.red, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 2, "Long TP Limit",    text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 2, allowLong ? str.tostring(plannedLongTp, "#.##") : "—", text_color=color.green, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 3, "Long Risk",        text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 3, allowLong ? "$" + str.tostring(nz(plannedLongRiskDollars, 0), "#.#") + " @ " + str.tostring(activeContracts) + "ct" : "—", text_color=color.new(color.red, 20), text_size=size.small)
+            table.cell(dash, 0, rowOffset + 4, "Short Trigger",    text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 4, allowShort ? str.tostring(plannedShortEntry, "#.##") : "BLOCKED", text_color=allowShort ? color.red : color.red, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 5, "Short Stop",       text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 5, allowShort ? str.tostring(plannedShortSl, "#.##") : "—", text_color=color.red, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 6, "Short TP Limit",   text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 6, allowShort ? str.tostring(plannedShortTp, "#.##") : "—", text_color=color.green, text_size=size.small)
+            table.cell(dash, 0, rowOffset + 7, "Short Risk",       text_color=color.white, text_size=size.small)
+            table.cell(dash, 1, rowOffset + 7, allowShort ? "$" + str.tostring(nz(plannedShortRiskDollars, 0), "#.#") + " @ " + str.tostring(activeContracts) + "ct" : "—", text_color=color.new(color.red, 20), text_size=size.small)
 
 var float cumPnl = 0.0
 var int tradeCount = 0
@@ -458,7 +475,7 @@ if (longExitSignal != "" or shortExitSignal != "") and not na(lastRealizedPnlDol
         winCount := winCount + 1
 
 if showDash and barstate.islast and tradeCount > 0
-    var table stats = table.new(position.bottom_right, 2, 5, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.new(color.gray, 60))
+    var table stats = table.new(position.bottom_right, 2, 6, bgcolor=color.new(color.black, 30), border_width=1, border_color=color.new(color.gray, 60))
     table.cell(stats, 0, 0, "Trades",       text_color=color.white, text_size=size.tiny)
     table.cell(stats, 1, 0, str.tostring(tradeCount), text_color=color.white, text_size=size.tiny)
     table.cell(stats, 0, 1, "Win Rate",       text_color=color.white, text_size=size.tiny)
@@ -470,3 +487,5 @@ if showDash and barstate.islast and tradeCount > 0
     table.cell(stats, 1, 3, "$" + str.tostring(avgDollars, "#.#") + "/trade", text_color=avgDollars >= 0 ? color.green : color.red, text_size=size.tiny)
     table.cell(stats, 0, 4, "Last Exit",      text_color=color.white, text_size=size.tiny)
     table.cell(stats, 1, 4, lastExitReason == "" ? "—" : lastExitReason, text_color=color.orange, text_size=size.tiny)
+    table.cell(stats, 0, 5, "Last Exit Px",   text_color=color.white, text_size=size.tiny)
+    table.cell(stats, 1, 5, na(lastExitPrice) ? "—" : str.tostring(lastExitPrice, "#.##"), text_color=color.yellow, text_size=size.tiny)
