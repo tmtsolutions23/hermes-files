@@ -436,7 +436,7 @@ if showDash and barstate.islast
     table.cell(dash, 1, 11, str.tostring(trailPct, "#.#") + "%", text_color=color.white, text_size=size.small)
     
     // ─ Time remaining ─
-    sessionMinLeft = max(0, (16 * 60 + 0) - currentMinutes)
+    sessionMinLeft = math.max(0, (16 * 60 + 0) - currentMinutes)
     table.cell(dash, 0, 12, "Session Left",       text_color=color.white, text_size=size.small)
     table.cell(dash, 1, 12, str.tostring(sessionMinLeft / 60, "0") + "h " + str.tostring(sessionMinLeft % 60, "0") + "m", text_color=sessionMinLeft < 30 ? color.orange : color.white, text_size=size.small)
 
