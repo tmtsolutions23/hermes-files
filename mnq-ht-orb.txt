@@ -454,12 +454,10 @@ if showDash and barstate.islast
         table.cell(dash, 1, rowOffset + 1, str.tostring(nz(slPrice, 0), "#.##"), text_color=slColor, text_size=size.small)
         
         // Show initial SL separately if trail has moved it
+        slShowRow = slTrailing ? rowOffset + 3 : rowOffset + 2
         if slTrailing
             table.cell(dash, 0, rowOffset + 2, "Initial SL",    text_color=color.gray, text_size=size.tiny)
             table.cell(dash, 1, rowOffset + 2, str.tostring(nz(initialSl, 0), "#.##"), text_color=color.new(color.red, 40), text_size=size.tiny)
-            slShowRow = rowOffset + 3
-        else
-            slShowRow = rowOffset + 2
         
         // TP target
         table.cell(dash, 0, slShowRow, "TP Target",       text_color=color.white, text_size=size.small)
