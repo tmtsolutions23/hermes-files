@@ -349,18 +349,17 @@ plot(postOrbLow,  "ORB Low",  color=not na(rangeWidth) and isRTH ? color.new(col
 bgcolor(isORBWindow and showORB ? color.new(color.yellow, 92) : na, title="ORB Window")
 
 // Entry levels (dashed)
-plot(not na(longEntry) and isRTH and not isORBWindow ? longEntry : na, "Long Entry Level", color=color.new(color.green, 40), linewidth=1, style=plot.style_linebrk)
-plot(not na(shortEntry) and isRTH and not isORBWindow ? shortEntry : na, "Short Entry Level", color=color.new(color.red, 40), linewidth=1, style=plot.style_linebrk)
+plot(not na(longEntry) and isRTH and not isORBWindow ? longEntry : na, "Long Entry Level", color=color.new(color.green, 40), linewidth=1, style=plot.style_linebr)
+plot(not na(shortEntry) and isRTH and not isORBWindow ? shortEntry : na, "Short Entry Level", color=color.new(color.red, 40), linewidth=1, style=plot.style_linebr)
 
 // SL and TP lines when in position (more prominent)
-if showLevels
-    plot(inLong ? slPrice : na,       "Stop Loss Long",  color=color.new(color.red, 10),    linewidth=2, style=plot.style_linebrk)
-    plot(inShort ? slPrice : na,      "Stop Loss Short", color=color.new(color.red, 10),    linewidth=2, style=plot.style_linebrk)
-    plot(inLong ? tpPrice : na,       "Take Profit Long", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebrk)
-    plot(inShort ? tpPrice : na,      "Take Profit Short", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebrk)
-    // Show initial SL as dashed for comparison when trail has moved it
-    plot(inLong and slTrailing ? initialSl : na,  "Initial SL Long",  color=color.new(color.red, 60),    linewidth=1, style=plot.style_linebrk)
-    plot(inShort and slTrailing ? initialSl : na, "Initial SL Short", color=color.new(color.red, 60),    linewidth=1, style=plot.style_linebrk)
+plot(showLevels and inLong ? slPrice : na, "Stop Loss Long", color=color.new(color.red, 10), linewidth=2, style=plot.style_linebr)
+plot(showLevels and inShort ? slPrice : na, "Stop Loss Short", color=color.new(color.red, 10), linewidth=2, style=plot.style_linebr)
+plot(showLevels and inLong ? tpPrice : na, "Take Profit Long", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebr)
+plot(showLevels and inShort ? tpPrice : na, "Take Profit Short", color=color.new(color.green, 10), linewidth=2, style=plot.style_linebr)
+// Show initial SL as dashed for comparison when trail has moved it
+plot(showLevels and inLong and slTrailing ? initialSl : na, "Initial SL Long", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
+plot(showLevels and inShort and slTrailing ? initialSl : na, "Initial SL Short", color=color.new(color.red, 60), linewidth=1, style=plot.style_linebr)
 
 // HTF bias arrow (shown at start of each day)
 plotshape(showHTF and useHtf and htfBias == 1 and isNewDay, "HTF Bull", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
