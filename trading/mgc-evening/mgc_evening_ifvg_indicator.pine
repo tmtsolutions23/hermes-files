@@ -41,6 +41,7 @@ showDashboard  = input.bool(true, "Show Dashboard", group="Visuals")
 
 // ── Time helpers ─────────────────────────────────────────────────────
 TZ = "America/New_York"
+goldColor = color.rgb(255, 215, 0)
 etHour = hour(time, TZ)
 etMinute = minute(time, TZ)
 etTime = etHour * 100 + etMinute
@@ -54,7 +55,7 @@ isSundayOpen = dow == dayofweek.sunday and etHour >= 18
 isMondayEarly = dow == dayofweek.monday and etHour < 1
 isWeekendGap = skipWeekendGaps and (isSundayOpen or isMondayEarly)
 
-bgcolor(showBg and activeWindow ? color.new(color.gold, 90) : na, title="MGC Night Session")
+bgcolor(showBg and activeWindow ? color.new(goldColor, 90) : na, title="MGC Night Session")
 
 // ── Core measurements ────────────────────────────────────────────────
 atrVal = ta.atr(atrLen)
@@ -223,8 +224,8 @@ if shortSignal
 // ── Dashboard ────────────────────────────────────────────────────────
 var table dash = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 25), border_width=1)
 if showDashboard and barstate.islast
-    table.cell(dash, 0, 0, "MGC EVENING IFVG", text_color=color.white, bgcolor=color.new(color.gold, 75))
-    table.cell(dash, 1, 0, sessionMode, text_color=color.black, bgcolor=color.new(color.gold, 25))
+    table.cell(dash, 0, 0, "MGC EVENING IFVG", text_color=color.white, bgcolor=color.new(goldColor, 75))
+    table.cell(dash, 1, 0, sessionMode, text_color=color.black, bgcolor=color.new(goldColor, 25))
 
     biasText = longActive ? "LONG SETUP" : shortActive ? "SHORT SETUP" : "WAIT"
     biasColor = longActive ? color.lime : shortActive ? color.fuchsia : color.gray
