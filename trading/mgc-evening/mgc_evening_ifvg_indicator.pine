@@ -1,0 +1,261 @@
+// ============================================================================
+// MGC Evening IFVG Indicator
+// ============================================================================
+// Purpose:
+//   Manual night-session TradingView indicator for MGC (Micro Gold).
+//   Built from the ICT/IFVG gold research track and constrained for eval use.
+//
+// Research summary baked into defaults:
+//   - Core high-quality window: 6:00 PM - 8:00 PM ET
+//   - Optional broader night window: 6:00 PM - 2:00 AM ET
+//   - Minimal filters only: session + displacement + freshness + weekend gap skip
+//   - This is a SECONDARY / supplemental eval tool, not the primary 3-week pass engine.
+// ============================================================================
+
+//@version=5
+indicator("MGC Evening IFVG Indicator", overlay=true, max_labels_count=500, max_boxes_count=300, max_lines_count=300)
+
+// ── Inputs ───────────────────────────────────────────────────────────
+accountSize   = input.float(50000.0, "Account Size", group="Risk")
+riskPct       = input.float(0.5, "Risk % Per Trade", step=0.1, group="Risk", tooltip="Eval-safe default. Backtests show MGC night strategy is slower than MNQ ORB.")
+minContracts  = input.int(1, "Min Contracts", minval=1, maxval=40, group="Risk")
+maxContracts  = input.int(4, "Max Contracts", minval=1, maxval=40, group="Risk", tooltip="Lucid allows up to 40 micros. Default kept conservative.")
+
+sessionMode = input.string("Core 6PM-8PM", "Session Mode", options=["Core 6PM-8PM", "Overnight 6PM-2AM"], group="Session")
+showBg      = input.bool(true, "Shade Active Session", group="Session")
+skipWeekendGaps = input.bool(true, "Skip Sunday/Monday Gap Noise", group="Session")
+
+requireDisplacement = input.bool(true, "Require Displacement", group="Filters")
+requireFreshness    = input.bool(true, "Require Setup Freshness", group="Filters")
+displacementMult    = input.float(0.5, "Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Filters")
+freshBars           = input.int(20, "Max Setup Age (bars)", minval=5, maxval=100, group="Filters")
+minFvgPct           = input.float(0.05, "Min FVG Size %", minval=0.01, maxval=1.0, step=0.01, group="Filters")
+
+atrLen         = input.int(14, "ATR Length", minval=5, maxval=50, group="Trade Plan")
+stopMultNormal = input.float(2.0, "ATR Stop Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Trade Plan")
+tpR            = input.float(2.0, "Primary TP (R)", minval=1.0, maxval=5.0, step=0.5, group="Trade Plan")
+
+showFvgBoxes   = input.bool(true, "Show FVG Boxes", group="Visuals")
+showIfvgBoxes  = input.bool(true, "Show IFVG Boxes", group="Visuals")
+showDashboard  = input.bool(true, "Show Dashboard", group="Visuals")
+
+// ── Time helpers ─────────────────────────────────────────────────────
+TZ = "America/New_York"
+etHour = hour(time, TZ)
+etMinute = minute(time, TZ)
+etTime = etHour * 100 + etMinute
+dow = dayofweek(time, TZ)
+
+coreWindow = etHour >= 18 and etHour < 20
+overnightWindow = etHour >= 18 or etHour < 2
+activeWindow = sessionMode == "Core 6PM-8PM" ? coreWindow : overnightWindow
+
+isSundayOpen = dow == dayofweek.sunday and etHour >= 18
+isMondayEarly = dow == dayofweek.monday and etHour < 1
+isWeekendGap = skipWeekendGaps and (isSundayOpen or isMondayEarly)
+
+bgcolor(showBg and activeWindow ? color.new(color.gold, 90) : na, title="MGC Night Session")
+
+// ── Core measurements ────────────────────────────────────────────────
+atrVal = ta.atr(atrLen)
+bodySize = math.abs(close - open)
+displacementNow = bodySize > atrVal * displacementMult
+hadRecentDisplacement = displacementNow or displacementNow[1] or displacementNow[2] or displacementNow[3] or displacementNow[4]
+
+minGapSize = ((high + low) / 2.0) * (minFvgPct / 100.0)
+bullishFvg = low > high[2] and (low - high[2]) > minGapSize and (not requireDisplacement or displacementNow[1])
+bearishFvg = high < low[2] and (low[2] - high) > minGapSize and (not requireDisplacement or displacementNow[1])
+
+// ── Visual FVGs ──────────────────────────────────────────────────────
+if showFvgBoxes and bullishFvg
+    box.new(bar_index - 2, low, bar_index + 12, high[2], border_color=color.new(color.green, 45), bgcolor=color.new(color.green, 88), border_width=1)
+if showFvgBoxes and bearishFvg
+    box.new(bar_index - 2, low[2], bar_index + 12, high, border_color=color.new(color.red, 45), bgcolor=color.new(color.red, 88), border_width=1)
+
+// ── Store FVG zones for IFVG inversion/retest ────────────────────────
+var float[] bullZoneTops = array.new_float()
+var float[] bullZoneBottoms = array.new_float()
+var int[] bullZoneBars = array.new_int()
+var float[] bearZoneTops = array.new_float()
+var float[] bearZoneBottoms = array.new_float()
+var int[] bearZoneBars = array.new_int()
+
+if bullishFvg
+    array.push(bullZoneTops, low)
+    array.push(bullZoneBottoms, high[2])
+    array.push(bullZoneBars, bar_index - 2)
+    if array.size(bullZoneTops) > 30
+        array.shift(bullZoneTops)
+        array.shift(bullZoneBottoms)
+        array.shift(bullZoneBars)
+
+if bearishFvg
+    array.push(bearZoneTops, low[2])
+    array.push(bearZoneBottoms, high)
+    array.push(bearZoneBars, bar_index - 2)
+    if array.size(bearZoneTops) > 30
+        array.shift(bearZoneTops)
+        array.shift(bearZoneBottoms)
+        array.shift(bearZoneBars)
+
+// ── IFVG state ───────────────────────────────────────────────────────
+var float activeLongTop = na
+var float activeLongBottom = na
+var int activeLongBar = na
+var float activeShortTop = na
+var float activeShortBottom = na
+var int activeShortBar = na
+
+// Phase 1: inversion -> activate IFVG
+if array.size(bearZoneTops) > 0
+    for i = array.size(bearZoneTops) - 1 to 0
+        zTop = array.get(bearZoneTops, i)
+        zBot = array.get(bearZoneBottoms, i)
+        zBar = array.get(bearZoneBars, i)
+        if bar_index - zBar > freshBars * 2
+            continue
+        if close > zTop
+            activeLongTop := zTop
+            activeLongBottom := zBot
+            activeLongBar := bar_index
+            array.remove(bearZoneTops, i)
+            array.remove(bearZoneBottoms, i)
+            array.remove(bearZoneBars, i)
+            break
+
+if array.size(bullZoneTops) > 0
+    for i = array.size(bullZoneTops) - 1 to 0
+        zTop = array.get(bullZoneTops, i)
+        zBot = array.get(bullZoneBottoms, i)
+        zBar = array.get(bullZoneBars, i)
+        if bar_index - zBar > freshBars * 2
+            continue
+        if close < zBot
+            activeShortTop := zTop
+            activeShortBottom := zBot
+            activeShortBar := bar_index
+            array.remove(bullZoneTops, i)
+            array.remove(bullZoneBottoms, i)
+            array.remove(bullZoneBars, i)
+            break
+
+longActive = not na(activeLongTop) and not na(activeLongBottom)
+shortActive = not na(activeShortTop) and not na(activeShortBottom)
+
+longAge = longActive ? bar_index - activeLongBar : na
+shortAge = shortActive ? bar_index - activeShortBar : na
+
+if longActive and longAge > freshBars
+    activeLongTop := na
+    activeLongBottom := na
+    activeLongBar := na
+if shortActive and shortAge > freshBars
+    activeShortTop := na
+    activeShortBottom := na
+    activeShortBar := na
+
+if showIfvgBoxes and longActive
+    box.new(bar_index - 1, activeLongTop, bar_index + 8, activeLongBottom, border_color=color.new(color.lime, 25), bgcolor=color.new(color.lime, 90), border_width=1)
+if showIfvgBoxes and shortActive
+    box.new(bar_index - 1, activeShortTop, bar_index + 8, activeShortBottom, border_color=color.new(color.fuchsia, 25), bgcolor=color.new(color.fuchsia, 90), border_width=1)
+
+// Phase 2: retest -> signal
+longRetest = longActive and low <= activeLongTop and low >= activeLongBottom * 0.998 and close > activeLongBottom
+shortRetest = shortActive and high >= activeShortBottom and high <= activeShortTop * 1.002 and close < activeShortTop
+
+longEntry = longActive ? (activeLongTop + activeLongBottom) / 2.0 : na
+shortEntry = shortActive ? (activeShortTop + activeShortBottom) / 2.0 : na
+longStop = longActive ? activeLongBottom - atrVal * stopMultNormal : na
+shortStop = shortActive ? activeShortTop + atrVal * stopMultNormal : na
+longRiskPts = longActive ? math.abs(longEntry - longStop) : na
+shortRiskPts = shortActive ? math.abs(shortEntry - shortStop) : na
+longTp = longActive ? longEntry + longRiskPts * tpR : na
+shortTp = shortActive ? shortEntry - shortRiskPts * tpR : na
+
+pointVal = syminfo.pointvalue
+allowedLoss = accountSize * (riskPct / 100.0)
+longContractsRaw = longActive and longRiskPts > 0 ? math.floor(allowedLoss / (longRiskPts * pointVal)) : 0
+shortContractsRaw = shortActive and shortRiskPts > 0 ? math.floor(allowedLoss / (shortRiskPts * pointVal)) : 0
+longContracts = longActive ? math.max(minContracts, math.min(int(longContractsRaw), maxContracts)) : 0
+shortContracts = shortActive ? math.max(minContracts, math.min(int(shortContractsRaw), maxContracts)) : 0
+
+longFiltersOk = activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and (not requireFreshness or longAge <= freshBars)
+shortFiltersOk = activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and (not requireFreshness or shortAge <= freshBars)
+
+longSignal = longRetest and longFiltersOk
+shortSignal = shortRetest and shortFiltersOk
+
+plotshape(longSignal, title="MGC Night Long", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="MGC L")
+plotshape(shortSignal, title="MGC Night Short", style=shape.triangledown, location=location.abovebar, color=color.fuchsia, size=size.small, text="MGC S")
+
+// Trade-plan overlays for active setup
+plot(longActive ? longEntry : na, title="Long Trigger", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(longActive ? longStop : na, title="Long Stop", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(longActive ? longTp : na, title="Long TP", color=color.new(color.aqua, 0), linewidth=1, style=plot.style_linebr)
+plot(shortActive ? shortEntry : na, title="Short Trigger", color=color.new(color.fuchsia, 0), linewidth=2, style=plot.style_linebr)
+plot(shortActive ? shortStop : na, title="Short Stop", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
+plot(shortActive ? shortTp : na, title="Short TP", color=color.new(color.aqua, 0), linewidth=1, style=plot.style_linebr)
+
+// ── Alerts ───────────────────────────────────────────────────────────
+alertcondition(longSignal, title="MGC Night Long Entry", message="MGC Night LONG | See chart/dashboard for trigger, stop, TP, contracts")
+alertcondition(shortSignal, title="MGC Night Short Entry", message="MGC Night SHORT | See chart/dashboard for trigger, stop, TP, contracts")
+alertcondition(longActive, title="MGC Night Long Setup Armed", message="MGC Night LONG setup armed")
+alertcondition(shortActive, title="MGC Night Short Setup Armed", message="MGC Night SHORT setup armed")
+
+longMsg = "MGC NIGHT LONG | Trigger=" + str.tostring(longEntry, format.mintick) + " | Stop=" + str.tostring(longStop, format.mintick) + " | TP=" + str.tostring(longTp, format.mintick) + " | Contracts=" + str.tostring(longContracts) + " | Risk$=" + str.tostring(longRiskPts * pointVal * longContracts, "#.##") + " | Window=" + sessionMode
+shortMsg = "MGC NIGHT SHORT | Trigger=" + str.tostring(shortEntry, format.mintick) + " | Stop=" + str.tostring(shortStop, format.mintick) + " | TP=" + str.tostring(shortTp, format.mintick) + " | Contracts=" + str.tostring(shortContracts) + " | Risk$=" + str.tostring(shortRiskPts * pointVal * shortContracts, "#.##") + " | Window=" + sessionMode
+
+if longSignal
+    alert(longMsg, alert.freq_once_per_bar_close)
+if shortSignal
+    alert(shortMsg, alert.freq_once_per_bar_close)
+
+// Prevent repeated firing from same active zone after first retest signal
+if longSignal
+    activeLongTop := na
+    activeLongBottom := na
+    activeLongBar := na
+if shortSignal
+    activeShortTop := na
+    activeShortBottom := na
+    activeShortBar := na
+
+// ── Dashboard ────────────────────────────────────────────────────────
+var table dash = table.new(position.top_right, 2, 11, bgcolor=color.new(color.black, 25), border_width=1)
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, "MGC EVENING IFVG", text_color=color.white, bgcolor=color.new(color.gold, 75))
+    table.cell(dash, 1, 0, sessionMode, text_color=color.black, bgcolor=color.new(color.gold, 25))
+
+    biasText = longActive ? "LONG SETUP" : shortActive ? "SHORT SETUP" : "WAIT"
+    biasColor = longActive ? color.lime : shortActive ? color.fuchsia : color.gray
+    table.cell(dash, 0, 1, "Bias", text_color=color.white)
+    table.cell(dash, 1, 1, biasText, text_color=biasColor)
+
+    table.cell(dash, 0, 2, "Window", text_color=color.white)
+    table.cell(dash, 1, 2, activeWindow ? "ACTIVE" : "OUTSIDE", text_color=activeWindow ? color.lime : color.orange)
+
+    table.cell(dash, 0, 3, "Trigger", text_color=color.white)
+    table.cell(dash, 1, 3, longActive ? str.tostring(longEntry, format.mintick) : shortActive ? str.tostring(shortEntry, format.mintick) : "---", text_color=color.yellow)
+
+    table.cell(dash, 0, 4, "Stop", text_color=color.white)
+    table.cell(dash, 1, 4, longActive ? str.tostring(longStop, format.mintick) : shortActive ? str.tostring(shortStop, format.mintick) : "---", text_color=color.red)
+
+    table.cell(dash, 0, 5, "TP", text_color=color.white)
+    table.cell(dash, 1, 5, longActive ? str.tostring(longTp, format.mintick) : shortActive ? str.tostring(shortTp, format.mintick) : "---", text_color=color.aqua)
+
+    table.cell(dash, 0, 6, "Contracts", text_color=color.white)
+    table.cell(dash, 1, 6, longActive ? str.tostring(longContracts) : shortActive ? str.tostring(shortContracts) : "0", text_color=color.yellow)
+
+    table.cell(dash, 0, 7, "Risk $", text_color=color.white)
+    riskDollars = longActive ? longRiskPts * pointVal * longContracts : shortActive ? shortRiskPts * pointVal * shortContracts : na
+    table.cell(dash, 1, 7, not na(riskDollars) ? str.tostring(riskDollars, "#.##") : "---", text_color=color.orange)
+
+    table.cell(dash, 0, 8, "Freshness", text_color=color.white)
+    freshText = longActive ? str.tostring(longAge) + "/" + str.tostring(freshBars) : shortActive ? str.tostring(shortAge) + "/" + str.tostring(freshBars) : "---"
+    table.cell(dash, 1, 8, freshText, text_color=color.white)
+
+    table.cell(dash, 0, 9, "Gap Filter", text_color=color.white)
+    table.cell(dash, 1, 9, isWeekendGap ? "BLOCKED" : "CLEAR", text_color=isWeekendGap ? color.red : color.lime)
+
+    table.cell(dash, 0, 10, "Eval Note", text_color=color.white)
+    table.cell(dash, 1, 10, "Use as night supplement, not primary pass engine", text_color=color.orange)

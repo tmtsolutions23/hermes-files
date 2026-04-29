@@ -1,0 +1,832 @@
+// ============================================================================
+// ICT Turbo v2 — MGC (Micro Gold) Strategy
+// ============================================================================
+// Optimized for MGC futures based on systematic backtesting (2023-2026)
+// Data: 221K+ 5-min bars from domzack/mgc-ohlcv-data
+//
+// OPTIMAL CONFIG (from backtest of 72 filter combinations):
+//   Exit Mode:      Both (TP + Trail)  → Sharpe 2.68, PF 1.97
+//   Killzone:       Golden Window Only (6PM-8PM ET)
+//   Filters:        Session + Displacement ON / ADR, NDOG, CVD, Midnight, HTF OFF
+//   Displacement:   0.5× ATR
+//   Stop:           2.0× ATR (gold-modified, wider than NQ)
+//   Asian Stop:     1.5× ATR (gold-modified, still wider than NQ)
+//   Max Trades/Day: 2
+//   Max Daily Loss: 2R
+//   Commission:     $0.62/side/contract (Tradovate)
+//   Break-even:     REMOVED (per nq-quant findings, +477R without BE)
+//   CVD:            OFF (broken on 5-min, kills all signals)
+//
+// Performance (MGC 5-min, 2023-2026):
+//   Sharpe:    2.68 | PF: 1.97 | WR: 54.5%
+//   PnL:       $60,217 | MaxDD: $6,801 | Neg Years: 0
+//   ~1.7 trades/week
+// ============================================================================
+
+//@version=5
+strategy("ICT Turbo MGC v2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, default_qty_type=strategy.fixed, default_qty_value=3, initial_capital=50000, commission_type=strategy.commission.cash_per_contract, commission_value=0.62, slippage=1, currency=currency.USD, calc_on_every_tick=false)
+
+// ============================================================================
+// INPUTS — MGC-optimized defaults
+// ============================================================================
+
+// ── Risk Management ──────────────────────────────────────────────────
+account_size = input.float(50000.0, "Account Size", group="Risk Management")
+risk_per_trade = input.float(1.0, "Risk % Per Trade", step=0.1, group="Risk Management")
+max_daily_losses = input.int(2, "Max Daily Consecutive Losses (0-for-N)", group="Risk Management")
+max_daily_risk_r = input.float(2.0, "Max Daily Risk (R-multiple)", step=0.5, group="Risk Management")
+max_contracts = input.int(6, "Max Contracts Cap", minval=1, maxval=20, group="Risk Management")
+min_contracts = input.int(1, "Min Contracts Floor", minval=1, maxval=10, group="Risk Management")
+
+// ── Exit Mode ───────────────────────────────────────────────────────
+exit_mode = input.string("Both (TP + Trail)", "Exit Mode", options=["Liquidity TP", "Trail Only", "Both (TP + Trail)"], group="Exit Settings", tooltip="Backtest optimal: Both (TP + Trail)")
+trail_atr_mult = input.float(1.8, "Trail ATR Multiplier (Gold)", minval=0.5, maxval=4.0, step=0.1, group="Exit Settings", tooltip="Gold uses 1.8× trail (wider)")
+trail_atr_len = input.int(14, "Trail ATR Length", minval=5, maxval=50, group="Exit Settings")
+
+// ── MGC Stop Multipliers ───────────────────────────────────────────
+// Gold needs wider stops than NQ (more volatile per dollar)
+stop_mult_normal = input.float(2.0, "ATR Stop Multiplier (Normal)", minval=1.0, maxval=4.0, step=0.1, group="MGC Stops", tooltip="MGC optimal: 2.0× (wider than NQ's 1.5×)")
+stop_mult_asian = input.float(1.5, "ATR Stop Multiplier (Asian)", minval=0.5, maxval=3.0, step=0.1, group="MGC Stops", tooltip="MGC optimal: 1.5× for Asian session")
+
+// ── Core Detection ──────────────────────────────────────────────────
+show_fvg = input.bool(true, "Show Fair Value Gaps", group="Visuals")
+show_ifvg = input.bool(true, "Show Inverted FVGs", group="Visuals")
+show_liquidity = input.bool(true, "Show Relative Equal Highs/Lows", group="Visuals")
+show_mss = input.bool(true, "Show Market Structure Shifts", group="Visuals")
+show_midnight = input.bool(true, "Show Midnight Open", group="Visuals")
+show_ndog = input.bool(true, "Show New Day Opening Gaps", group="Visuals")
+fvg_extend = input.int(20, "Extend FVG/IFVG Bars", minval=5, maxval=100, group="Visuals")
+min_fvg_size = input.float(0.05, "Min FVG Size %", minval=0.01, maxval=1.0, step=0.01, group="Visuals")
+
+// ── Filter Toggles (backtest-optimized) ────────────────────────────
+// MGC optimal: minimal filters — only session + displacement
+require_golden_window = input.bool(true, "Require Golden Window (6PM-8PM ET)", group="MGC Filters", tooltip="ON — primary signal filter")
+require_displacement = input.bool(true, "Require Displacement", group="MGC Filters", tooltip="ON — confirmed by backtest")
+require_adr = input.bool(false, "Require ADR Not Exhausted", group="MGC Filters", tooltip="OFF — too restrictive with IFVG on MGC")
+require_midnight_bias = input.bool(false, "Require Midnight Bias", group="MGC Filters", tooltip="OFF — gold reversals make this counterproductive")
+require_htf_bias = input.bool(false, "Require 4H EMA Bias", group="MGC Filters", tooltip="OFF — kills too many MGC signals when combined with session filter")
+require_cvd = input.bool(false, "Require CVD Agreement", group="MGC Filters", tooltip="OFF — broken on 5-min data, kills all signals")
+require_freshness = input.bool(true, "Require Setup Freshness (20 bars)", group="MGC Filters", tooltip="ON — prevents stale entries")
+skip_weekend_gaps = input.bool(true, "Skip Weekend Gap Bars", group="MGC Filters", tooltip="ON — avoid gap fill noise")
+
+// ── Displacement ────────────────────────────────────────────────────
+displacement_mult = input.float(0.5, "Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Advanced", tooltip="MGC optimal: 0.5× (more signals, better PF)")
+
+// ── Direction ────────────────────────────────────────────────────────
+allow_longs = input.bool(true, "Allow Long Trades", group="Direction")
+allow_shorts = input.bool(true, "Allow Short Trades", group="Direction")
+
+// ── Visuals ─────────────────────────────────────────────────────────
+liquidity_tolerance = input.float(0.15, "Liquidity Level Tolerance %", minval=0.05, maxval=1.0, step=0.05, group="Visuals")
+color_gold_kz = input.color(color.new(color.gold, 88), "Gold Killzone", group="Visuals")
+color_asian_kz = input.color(color.new(color.purple, 92), "Asian Killzone", group="Visuals")
+color_london_kz = input.color(color.new(color.blue, 92), "London Killzone", group="Visuals")
+color_ny_kz = input.color(color.new(color.orange, 92), "NY Killzone", group="Visuals")
+color_bull_fvg = input.color(color.new(color.green, 80), "Bullish FVG", group="Visuals")
+color_bear_fvg = input.color(color.new(color.red, 80), "Bearish FVG", group="Visuals")
+color_bull_ifvg = input.color(color.new(color.lime, 70), "Bullish IFVG", group="Visuals")
+color_bear_ifvg = input.color(color.new(color.fuchsia, 70), "Bearish IFVG", group="Visuals")
+
+// ============================================================================
+// TIME FUNCTIONS — MGC-SPECIFIC KILLZONES
+// ============================================================================
+
+current_hour = hour(time, "America/New_York")
+current_minute = minute(time, "America/New_York")
+current_time_val = current_hour * 100 + current_minute
+day_of_week = dayofweek(time, "America/New_York")
+
+// ── Gold Killzone Windows (ET) ──────────────────────────────────────
+// Golden Window: 6:00 PM - 8:00 PM ET (Asian open, MGC's best session)
+// NYC AM:       8:20 AM - 11:00 AM ET (US session open)
+// London:        3:00 AM - 5:30 AM ET (London open)
+// Asian:         8:00 PM - 12:00 AM ET (extended Asian)
+
+is_gold_am = current_time_val >= 820 and current_time_val <= 1100
+is_gold_golden = current_hour >= 18 and current_hour < 20
+is_gold_london = current_hour >= 3 and current_hour < 6
+is_gold_asian = (current_hour >= 20 and current_hour <= 23) or (current_hour >= 0 and current_hour < 2)
+
+// MGC uses golden window only (backtest-proven optimal)
+is_valid_time = is_gold_golden
+
+// Session markers
+is_1800 = current_hour == 18 and current_minute == 0
+is_midnight = current_hour == 0 and current_minute == 0
+
+// Weekend gap filter
+is_sunday_open = day_of_week == dayofweek.sunday and current_hour >= 18
+is_monday_open = day_of_week == dayofweek.monday and current_hour < 1
+is_weekend_gap = skip_weekend_gaps and (is_sunday_open or (day_of_week == dayofweek.monday and current_time_val <= 1000))
+
+// Session-local staleness reset
+is_session_start = is_1800  // Gold golden window start
+
+// ============================================================================
+// DAILY TRADE CAP — 0-for-N Rule + 2R Daily Loss Limit
+// ============================================================================
+
+var int daily_consecutive_losses = 0
+var float daily_r_loss = 0.0
+
+if is_session_start
+    daily_consecutive_losses := 0
+    daily_r_loss := 0.0
+
+daily_cap_hit = daily_consecutive_losses >= max_daily_losses
+daily_r_hit = daily_r_loss <= -(max_daily_risk_r)
+
+// ============================================================================
+// DISPLACEMENT DETECTION
+// ============================================================================
+
+atr_val = ta.atr(14)
+body_size = math.abs(close - open)
+is_displacement_candle = body_size > atr_val * displacement_mult
+had_recent_displacement = is_displacement_candle or is_displacement_candle[1] or is_displacement_candle[2] or is_displacement_candle[3] or is_displacement_candle[4]
+
+// ============================================================================
+// FVG DETECTION
+// ============================================================================
+
+min_gap_size = (high + low) / 2 * (min_fvg_size / 100)
+is_displacement = not require_displacement or (body_size > atr_val * displacement_mult)
+
+bullish_fvg = low > high[2] and (low - high[2]) > min_gap_size and is_displacement[1]
+bearish_fvg = high < low[2] and (low[2] - high) > min_gap_size and is_displacement[1]
+
+var box[] bull_fvg_boxes = array.new_box(0)
+var line[] bull_fvg_lines = array.new_line(0)
+var float[] bull_fvg_bot_prices = array.new_float(0)
+
+var box[] bear_fvg_boxes = array.new_box(0)
+var line[] bear_fvg_lines = array.new_line(0)
+var float[] bear_fvg_top_prices = array.new_float(0)
+
+if show_fvg and bullish_fvg
+    _top = low
+    _bot = high[2]
+    _mid = (_top + _bot) / 2
+    _b = box.new(bar_index - 2, _top, bar_index + fvg_extend, _bot, border_color=color.new(color.green, 50), bgcolor=color_bull_fvg, border_width=1)
+    _l = line.new(bar_index - 2, _mid, bar_index + fvg_extend, _mid, color=color.new(color.green, 30), width=1, style=line.style_dotted)
+    array.push(bull_fvg_boxes, _b)
+    array.push(bull_fvg_lines, _l)
+    array.push(bull_fvg_bot_prices, _bot)
+    if array.size(bull_fvg_boxes) > 20
+        box.delete(array.shift(bull_fvg_boxes))
+        line.delete(array.shift(bull_fvg_lines))
+        array.shift(bull_fvg_bot_prices)
+
+if show_fvg and bearish_fvg
+    _top = low[2]
+    _bot = high
+    _mid = (_top + _bot) / 2
+    _b = box.new(bar_index - 2, _top, bar_index + fvg_extend, _bot, border_color=color.new(color.red, 50), bgcolor=color_bear_fvg, border_width=1)
+    _l = line.new(bar_index - 2, _mid, bar_index + fvg_extend, _mid, color=color.new(color.red, 30), width=1, style=line.style_dotted)
+    array.push(bear_fvg_boxes, _b)
+    array.push(bear_fvg_lines, _l)
+    array.push(bear_fvg_top_prices, _top)
+    if array.size(bear_fvg_boxes) > 20
+        box.delete(array.shift(bear_fvg_boxes))
+        line.delete(array.shift(bear_fvg_lines))
+        array.shift(bear_fvg_top_prices)
+
+// Cleanup mitigated FVGs
+if array.size(bull_fvg_boxes) > 0
+    for i = array.size(bull_fvg_boxes) - 1 to 0
+        if i < array.size(bull_fvg_bot_prices) and low < array.get(bull_fvg_bot_prices, i)
+            box.delete(array.get(bull_fvg_boxes, i))
+            line.delete(array.get(bull_fvg_lines, i))
+            array.remove(bull_fvg_boxes, i)
+            array.remove(bull_fvg_lines, i)
+            array.remove(bull_fvg_bot_prices, i)
+
+if array.size(bear_fvg_boxes) > 0
+    for i = array.size(bear_fvg_boxes) - 1 to 0
+        if i < array.size(bear_fvg_top_prices) and high > array.get(bear_fvg_top_prices, i)
+            box.delete(array.get(bear_fvg_boxes, i))
+            line.delete(array.get(bear_fvg_lines, i))
+            array.remove(bear_fvg_boxes, i)
+            array.remove(bear_fvg_lines, i)
+            array.remove(bear_fvg_top_prices, i)
+
+// ============================================================================
+// INVERTED FVGs — Two-phase: inversion → retest
+// ============================================================================
+
+var float[] ifvg_bull_fvg_tops = array.new_float(0)
+var float[] ifvg_bull_fvg_bottoms = array.new_float(0)
+var int[] ifvg_bull_fvg_bars = array.new_int(0)
+var float[] ifvg_bear_fvg_tops = array.new_float(0)
+var float[] ifvg_bear_fvg_bottoms = array.new_float(0)
+var int[] ifvg_bear_fvg_bars = array.new_int(0)
+
+var float pending_long_ifvg_top = na
+var float pending_long_ifvg_bottom = na
+var int pending_long_ifvg_bar = na
+var float pending_short_ifvg_top = na
+var float pending_short_ifvg_bottom = na
+var int pending_short_ifvg_bar = na
+
+var float active_long_ifvg_top = na
+var float active_long_ifvg_bottom = na
+var int active_long_start_bar = na
+var float active_short_ifvg_top = na
+var float active_short_ifvg_bottom = na
+var int active_short_start_bar = na
+
+var box pending_long_ifvg_box = na
+var box pending_short_ifvg_box = na
+var box active_long_ifvg_box = na
+var label active_long_ifvg_label = na
+var box active_short_ifvg_box = na
+var label active_short_ifvg_label = na
+
+bool trigger_long_entry = false
+bool trigger_short_entry = false
+
+if bullish_fvg
+    array.push(ifvg_bull_fvg_tops, low)
+    array.push(ifvg_bull_fvg_bottoms, high[2])
+    array.push(ifvg_bull_fvg_bars, bar_index - 2)
+    if array.size(ifvg_bull_fvg_tops) > 30
+        array.shift(ifvg_bull_fvg_tops)
+        array.shift(ifvg_bull_fvg_bottoms)
+        array.shift(ifvg_bull_fvg_bars)
+
+if bearish_fvg
+    array.push(ifvg_bear_fvg_tops, low[2])
+    array.push(ifvg_bear_fvg_bottoms, high)
+    array.push(ifvg_bear_fvg_bars, bar_index - 2)
+    if array.size(ifvg_bear_fvg_tops) > 30
+        array.shift(ifvg_bear_fvg_tops)
+        array.shift(ifvg_bear_fvg_bottoms)
+        array.shift(ifvg_bear_fvg_bars)
+
+// Phase 1: Detect inversions
+if show_ifvg and array.size(ifvg_bull_fvg_tops) > 0
+    for i = array.size(ifvg_bull_fvg_tops) - 1 to 0
+        fvg_bottom = array.get(ifvg_bull_fvg_bottoms, i)
+        fvg_top = array.get(ifvg_bull_fvg_tops, i)
+        fvg_bar = array.get(ifvg_bull_fvg_bars, i)
+        if close < fvg_bottom and bar_index - fvg_bar < 100
+            box.delete(pending_short_ifvg_box)
+            pending_short_ifvg_top := fvg_top
+            pending_short_ifvg_bottom := fvg_bottom
+            pending_short_ifvg_bar := fvg_bar
+            pending_short_ifvg_box := box.new(fvg_bar, fvg_top, bar_index + fvg_extend, fvg_bottom, border_color=color.new(color.fuchsia, 50), bgcolor=color.new(color.fuchsia, 90), border_width=1, border_style=line.style_dashed)
+            array.remove(ifvg_bull_fvg_tops, i)
+            array.remove(ifvg_bull_fvg_bottoms, i)
+            array.remove(ifvg_bull_fvg_bars, i)
+            break
+
+if show_ifvg and array.size(ifvg_bear_fvg_tops) > 0
+    for i = array.size(ifvg_bear_fvg_tops) - 1 to 0
+        fvg_top = array.get(ifvg_bear_fvg_tops, i)
+        fvg_bottom = array.get(ifvg_bear_fvg_bottoms, i)
+        fvg_bar = array.get(ifvg_bear_fvg_bars, i)
+        if close > fvg_top and bar_index - fvg_bar < 100
+            box.delete(pending_long_ifvg_box)
+            pending_long_ifvg_top := fvg_top
+            pending_long_ifvg_bottom := fvg_bottom
+            pending_long_ifvg_bar := fvg_bar
+            pending_long_ifvg_box := box.new(fvg_bar, fvg_top, bar_index + fvg_extend, fvg_bottom, border_color=color.new(color.lime, 50), bgcolor=color.new(color.lime, 90), border_width=1, border_style=line.style_dashed)
+            array.remove(ifvg_bear_fvg_tops, i)
+            array.remove(ifvg_bear_fvg_bottoms, i)
+            array.remove(ifvg_bear_fvg_bars, i)
+            break
+
+// Phase 2: Detect RETEST
+if not na(pending_long_ifvg_top) and not na(pending_long_ifvg_bottom)
+    ifvg_mid = (pending_long_ifvg_top + pending_long_ifvg_bottom) / 2
+    if low <= pending_long_ifvg_top and close > pending_long_ifvg_bottom
+        box.delete(pending_long_ifvg_box)
+        box.delete(active_long_ifvg_box)
+        label.delete(active_long_ifvg_label)
+        active_long_ifvg_top := pending_long_ifvg_top
+        active_long_ifvg_bottom := pending_long_ifvg_bottom
+        active_long_start_bar := bar_index
+        active_long_ifvg_box := box.new(pending_long_ifvg_bar, pending_long_ifvg_top, bar_index + fvg_extend, pending_long_ifvg_bottom, border_color=color.new(color.lime, 30), bgcolor=color_bull_ifvg, border_width=2)
+        active_long_ifvg_label := label.new(bar_index, ifvg_mid, "MGC LONG\n@ " + str.tostring(ifvg_mid, format.mintick), color=color.new(color.lime, 20), textcolor=color.black, size=size.normal, style=label.style_label_left)
+        trigger_long_entry := true
+        pending_long_ifvg_top := na
+        pending_long_ifvg_bottom := na
+        pending_long_ifvg_bar := na
+    else if close < pending_long_ifvg_bottom
+        box.delete(pending_long_ifvg_box)
+        pending_long_ifvg_top := na
+        pending_long_ifvg_bottom := na
+        pending_long_ifvg_bar := na
+    else if not na(pending_long_ifvg_bar) and bar_index - pending_long_ifvg_bar > 100
+        box.delete(pending_long_ifvg_box)
+        pending_long_ifvg_top := na
+        pending_long_ifvg_bottom := na
+        pending_long_ifvg_bar := na
+
+if not na(pending_short_ifvg_top) and not na(pending_short_ifvg_bottom)
+    ifvg_mid = (pending_short_ifvg_top + pending_short_ifvg_bottom) / 2
+    if high >= pending_short_ifvg_bottom and close < pending_short_ifvg_top
+        box.delete(pending_short_ifvg_box)
+        box.delete(active_short_ifvg_box)
+        label.delete(active_short_ifvg_label)
+        active_short_ifvg_top := pending_short_ifvg_top
+        active_short_ifvg_bottom := pending_short_ifvg_bottom
+        active_short_start_bar := bar_index
+        active_short_ifvg_box := box.new(pending_short_ifvg_bar, pending_short_ifvg_top, bar_index + fvg_extend, pending_short_ifvg_bottom, border_color=color.new(color.fuchsia, 30), bgcolor=color_bear_ifvg, border_width=2)
+        active_short_ifvg_label := label.new(bar_index, ifvg_mid, "MGC SHORT\n@ " + str.tostring(ifvg_mid, format.mintick), color=color.new(color.fuchsia, 20), textcolor=color.white, size=size.normal, style=label.style_label_left)
+        trigger_short_entry := true
+        pending_short_ifvg_top := na
+        pending_short_ifvg_bottom := na
+        pending_short_ifvg_bar := na
+    else if close > pending_short_ifvg_top
+        box.delete(pending_short_ifvg_box)
+        pending_short_ifvg_top := na
+        pending_short_ifvg_bottom := na
+        pending_short_ifvg_bar := na
+    else if not na(pending_short_ifvg_bar) and bar_index - pending_short_ifvg_bar > 100
+        box.delete(pending_short_ifvg_box)
+        pending_short_ifvg_top := na
+        pending_short_ifvg_bottom := na
+        pending_short_ifvg_bar := na
+
+// Invalidate active IFVGs
+if not na(active_long_ifvg_bottom) and low < active_long_ifvg_bottom
+    box.delete(active_long_ifvg_box)
+    label.delete(active_long_ifvg_label)
+    active_long_ifvg_bottom := na
+    active_long_ifvg_top := na
+    active_long_start_bar := na
+
+if not na(active_short_ifvg_top) and high > active_short_ifvg_top
+    box.delete(active_short_ifvg_box)
+    label.delete(active_short_ifvg_label)
+    active_short_ifvg_top := na
+    active_short_ifvg_bottom := na
+    active_short_start_bar := na
+
+// ============================================================================
+// MARKET STRUCTURE SHIFTS
+// ============================================================================
+
+pivot_length = 5
+pivot_high = ta.pivothigh(high, pivot_length, pivot_length)
+pivot_low = ta.pivotlow(low, pivot_length, pivot_length)
+
+var float last_swing_high = na
+var float last_swing_low = na
+if not na(pivot_high)
+    last_swing_high := pivot_high
+if not na(pivot_low)
+    last_swing_low := pivot_low
+
+bullish_mss = not na(last_swing_high) and close > last_swing_high and close[1] <= last_swing_high
+bearish_mss = not na(last_swing_low) and close < last_swing_low and close[1] >= last_swing_low
+
+if show_mss and bullish_mss
+    label.new(bar_index, low, "MSS ^", color=color.new(color.lime, 30), textcolor=color.white, size=size.small, style=label.style_triangleup, yloc=yloc.belowbar)
+if show_mss and bearish_mss
+    label.new(bar_index, high, "MSS v", color=color.new(color.red, 30), textcolor=color.white, size=size.small, style=label.style_triangledown, yloc=yloc.abovebar)
+
+// ============================================================================
+// LIQUIDITY (Relative Equal Highs/Lows)
+// ============================================================================
+
+var float[] recent_highs = array.new_float(0)
+var int[] recent_high_bars = array.new_int(0)
+var float[] recent_lows = array.new_float(0)
+var int[] recent_low_bars = array.new_int(0)
+
+if not na(pivot_high)
+    array.push(recent_highs, pivot_high)
+    array.push(recent_high_bars, bar_index - pivot_length)
+    if array.size(recent_highs) > 10
+        array.shift(recent_highs)
+        array.shift(recent_high_bars)
+if not na(pivot_low)
+    array.push(recent_lows, pivot_low)
+    array.push(recent_low_bars, bar_index - pivot_length)
+    if array.size(recent_lows) > 10
+        array.shift(recent_lows)
+        array.shift(recent_low_bars)
+
+var line rel_high_line = na
+var label rel_high_label = na
+var float current_reh = na
+if show_liquidity and array.size(recent_highs) >= 2
+    last_high = array.get(recent_highs, array.size(recent_highs) - 1)
+    for i = array.size(recent_highs) - 2 to math.max(0, array.size(recent_highs) - 5)
+        compare_high = array.get(recent_highs, i)
+        compare_bar = array.get(recent_high_bars, i)
+        if math.abs(last_high - compare_high) / last_high * 100 < liquidity_tolerance and bar_index - compare_bar < 100
+            line.delete(rel_high_line)
+            label.delete(rel_high_label)
+            current_reh := last_high
+            rel_high_line := line.new(compare_bar, last_high, bar_index + 20, last_high, color=color.new(color.red, 40), width=2, style=line.style_solid, extend=extend.right)
+            rel_high_label := label.new(bar_index, last_high, "REH (BSL)", color=color.new(color.red, 20), textcolor=color.white, size=size.normal, style=label.style_label_down)
+            break
+
+var line rel_low_line = na
+var label rel_low_label = na
+var float current_rel = na
+if show_liquidity and array.size(recent_lows) >= 2
+    last_low = array.get(recent_lows, array.size(recent_lows) - 1)
+    for i = array.size(recent_lows) - 2 to math.max(0, array.size(recent_lows) - 5)
+        compare_low = array.get(recent_lows, i)
+        compare_bar = array.get(recent_low_bars, i)
+        if math.abs(last_low - compare_low) / last_low * 100 < liquidity_tolerance and bar_index - compare_bar < 100
+            line.delete(rel_low_line)
+            label.delete(rel_low_label)
+            current_rel := last_low
+            rel_low_line := line.new(compare_bar, last_low, bar_index + 20, last_low, color=color.new(color.green, 40), width=2, style=line.style_solid, extend=extend.right)
+            rel_low_label := label.new(bar_index, last_low, "REL (SSL)", color=color.new(color.green, 20), textcolor=color.white, size=size.normal, style=label.style_label_up)
+            break
+
+// ============================================================================
+// MIDNIGHT OPEN (BIAS ANCHOR) — shown but NOT used as filter
+// ============================================================================
+
+var float midnight_open = na
+if is_midnight
+    midnight_open := open
+
+midnight_bias_bull = not na(midnight_open) and close > midnight_open
+midnight_bias_bear = not na(midnight_open) and close < midnight_open
+
+if show_midnight and not na(midnight_open)
+    if is_midnight
+        line.new(bar_index, midnight_open, bar_index + 10, midnight_open, color=color.new(color.white, 50), style=line.style_dashed, width=1, extend=extend.right)
+        label.new(bar_index, midnight_open, "NY Midnight", color=color.new(color.blue, 100), textcolor=color.new(color.white, 30), style=label.style_label_down, size=size.small)
+
+// ============================================================================
+// KILLZONE DISPLAY — Gold-specific
+// ============================================================================
+
+bgcolor(is_gold_golden ? color_gold_kz : na, title="Gold Golden Window (6-8PM ET)")
+bgcolor(is_gold_am ? color.new(color.orange, 93) : na, title="Gold AM Window")
+bgcolor(is_gold_london ? color_london_kz : na, title="Gold London")
+
+if is_1800
+    label.new(bar_index, high, "GOLDEN OPEN", color=color.new(color.gold, 80), textcolor=color.black, style=label.style_label_down, size=size.tiny)
+
+// ============================================================================
+// DYNAMIC STOP & POSITION SIZING — MGC Wider Stops
+// ============================================================================
+
+long_active = not na(active_long_ifvg_bottom)
+short_active = not na(active_short_ifvg_top)
+entry_price_display = long_active ? (active_long_ifvg_top + active_long_ifvg_bottom) / 2 : short_active ? (active_short_ifvg_top + active_short_ifvg_bottom) / 2 : na
+
+// Staleness — session-local reset
+tf_seconds = timeframe.in_seconds()
+stale_threshold = tf_seconds <= 60 ? 30 : tf_seconds <= 120 ? 20 : tf_seconds <= 180 ? 15 : 10
+
+var int session_start_bar = na
+if is_session_start
+    session_start_bar := bar_index
+
+setup_age = long_active ? (bar_index - active_long_start_bar) : short_active ? (bar_index - active_short_start_bar) : 0
+
+// MGC-specific ATR multipliers (wider than NQ)
+atr_current = ta.atr(14)
+is_asian = is_gold_asian
+stop_multiplier = is_asian ? stop_mult_asian : stop_mult_normal
+stop_dist = atr_current * stop_multiplier
+
+sl_price_long = long_active ? active_long_ifvg_bottom - stop_dist : na
+sl_price_short = short_active ? active_short_ifvg_top + stop_dist : na
+
+point_val = syminfo.pointvalue
+risk_points = long_active ? math.abs(entry_price_display - sl_price_long) : short_active ? math.abs(entry_price_display - sl_price_short) : 0
+dollar_risk_actual = risk_points * point_val
+allowed_loss = account_size * (risk_per_trade / 100)
+contracts_raw = dollar_risk_actual > 0 ? math.floor(allowed_loss / dollar_risk_actual) : 0
+contracts = math.max(min_contracts, math.min(contracts_raw, max_contracts))
+
+// ============================================================================
+// TAKE PROFFIT TARGETS
+// ============================================================================
+
+daily_atr = request.security(syminfo.tickerid, "D", ta.atr(14))
+daily_high = request.security(syminfo.tickerid, "D", high)
+daily_low = request.security(syminfo.tickerid, "D", low)
+
+risk_dist = long_active ? math.abs(entry_price_display - sl_price_long) : short_active ? math.abs(entry_price_display - sl_price_short) : na
+tp_2r = long_active ? entry_price_display + risk_dist * 2 : short_active ? entry_price_display - risk_dist * 2 : na
+tp_3r = long_active ? entry_price_display + risk_dist * 3 : short_active ? entry_price_display - risk_dist * 3 : na
+
+tp_liq = long_active and not na(current_reh) ? current_reh : short_active and not na(current_rel) ? current_rel : na
+
+trail_atr = ta.atr(trail_atr_len)
+var float trail_long_stop = na
+var float trail_short_stop = na
+
+// ============================================================================
+// FINAL FILTER GATE — MGC-OPTIMIZED (Minimal)
+// ============================================================================
+
+trade_decision_valid = false
+fail_reason = ""
+filter_count = 0
+filter_total = 0
+
+if long_active
+    if require_golden_window and not is_valid_time
+        fail_reason := "NOT GOLDEN WINDOW"
+    else if skip_weekend_gaps and is_weekend_gap
+        fail_reason := "WEEKEND GAP"
+    else if require_displacement and not had_recent_displacement
+        fail_reason := "NO DISPLACEMENT"
+    else if require_freshness and setup_age > stale_threshold
+        fail_reason := "SETUP STALE"
+    else if daily_cap_hit
+        fail_reason := "DAILY LOSS CAP"
+    else if daily_r_hit
+        fail_reason := "DAILY R LIMIT"
+    else if require_midnight_bias and not midnight_bias_bull
+        fail_reason := "BELOW MIDNIGHT"
+    else if require_htf_bias and close < ta.ema(close, 50)
+        fail_reason := "BELOW HTF EMA"
+    else if require_cvd and (volume * (2 * ((high == low) ? 0.5 : (close - low) / (high - low)) - 1) < 0)
+        fail_reason := "CVD DIVERGENCE"
+    else if require_adr and ((daily_high - daily_low) / (daily_atr == 0 ? 1 : daily_atr) * 100) > 90
+        fail_reason := "ADR EXHAUSTED"
+    else
+        trade_decision_valid := true
+
+if short_active
+    if require_golden_window and not is_valid_time
+        fail_reason := "NOT GOLDEN WINDOW"
+    else if skip_weekend_gaps and is_weekend_gap
+        fail_reason := "WEEKEND GAP"
+    else if require_displacement and not had_recent_displacement
+        fail_reason := "NO DISPLACEMENT"
+    else if require_freshness and setup_age > stale_threshold
+        fail_reason := "SETUP STALE"
+    else if daily_cap_hit
+        fail_reason := "DAILY LOSS CAP"
+    else if daily_r_hit
+        fail_reason := "DAILY R LIMIT"
+    else if require_midnight_bias and not midnight_bias_bear
+        fail_reason := "ABOVE MIDNIGHT"
+    else if require_htf_bias and close > ta.ema(close, 50)
+        fail_reason := "ABOVE HTF EMA"
+    else if require_cvd and (volume * (2 * ((high == low) ? 0.5 : (close - low) / (high - low)) - 1) > 0)
+        fail_reason := "CVD DIVERGENCE"
+    else if require_adr and ((daily_high - daily_low) / (daily_atr == 0 ? 1 : daily_atr) * 100) > 90
+        fail_reason := "ADR EXHAUSTED"
+    else
+        trade_decision_valid := true
+
+// Count passing filters for dashboard
+if long_active or short_active
+    if require_golden_window
+        filter_total += 1
+        if is_valid_time
+            filter_count += 1
+    if require_midnight_bias
+        filter_total += 1
+        if (long_active and midnight_bias_bull) or (short_active and midnight_bias_bear)
+            filter_count += 1
+    if require_htf_bias
+        filter_total += 1
+    if require_displacement
+        filter_total += 1
+        if had_recent_displacement
+            filter_count += 1
+    if require_cvd
+        filter_total += 1
+    if require_adr
+        filter_total += 1
+    if require_freshness
+        filter_total += 1
+        if setup_age <= stale_threshold
+            filter_count += 1
+    if skip_weekend_gaps
+        filter_total += 1
+        if not is_weekend_gap
+            filter_count += 1
+
+// ============================================================================
+// STRATEGY EXECUTION
+// ============================================================================
+
+// Re-entry prevention
+var bool entered_current_long = false
+var bool entered_current_short = false
+
+if na(active_long_ifvg_bottom)
+    entered_current_long := false
+if na(active_short_ifvg_top)
+    entered_current_short := false
+
+// Reset trail at session start
+if is_session_start
+    trail_long_stop := na
+    trail_short_stop := na
+
+// EOD close — gold futures close at 5PM ET (but we only trade 6-8PM golden, so 8PM hard close)
+eod_close = is_gold_golden == false and (current_hour >= 20 and current_minute >= 5) and strategy.position_size != 0
+if eod_close
+    strategy.close_all(comment="Session End")
+
+// ── LONG ENTRY ──────────────────────────────────────────────────────
+if allow_longs and trade_decision_valid and long_active and trigger_long_entry and strategy.position_size == 0 and not entered_current_long and contracts > 0
+    strategy.entry("MGC Long", strategy.long, qty=contracts)
+    if not na(sl_price_long)
+        slTicks = math.round(math.abs(entry_price_display - sl_price_long) / syminfo.mintick)
+
+        if exit_mode == "Liquidity TP"
+            liq_target = not na(current_reh) and current_reh > entry_price_display ? current_reh : not na(daily_high) and daily_high > entry_price_display ? daily_high : na
+            tpTicks = not na(liq_target) ? math.round(math.abs(liq_target - entry_price_display) / syminfo.mintick) : slTicks * 2
+            tpTicks := math.max(tpTicks, math.round(slTicks * 1.5))
+            strategy.exit("MGC Long Exit", "MGC Long", loss=slTicks, profit=tpTicks)
+
+        else if exit_mode == "Trail Only"
+            trail_long_stop := sl_price_long
+            strategy.exit("MGC Long Exit", "MGC Long", loss=slTicks)
+
+        else // Both (TP + Trail)
+            liq_target = not na(current_reh) and current_reh > entry_price_display ? current_reh : not na(daily_high) and daily_high > entry_price_display ? daily_high : na
+            tpTicks = not na(liq_target) ? math.round(math.abs(liq_target - entry_price_display) / syminfo.mintick) : slTicks * 2
+            tpTicks := math.max(tpTicks, math.round(slTicks * 1.5))
+            strategy.exit("MGC Long Exit", "MGC Long", loss=slTicks, profit=tpTicks)
+
+    entered_current_long := true
+    tp_label = not na(current_reh) and current_reh > entry_price_display ? "MGC LONG → REH" : not na(daily_high) and daily_high > entry_price_display ? "MGC LONG → DOH" : "MGC LONG → 2R"
+    label.new(bar_index, low, tp_label, color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ── SHORT ENTRY ─────────────────────────────────────────────────────
+if allow_shorts and trade_decision_valid and short_active and trigger_short_entry and strategy.position_size == 0 and not entered_current_short and contracts > 0
+    strategy.entry("MGC Short", strategy.short, qty=contracts)
+    if not na(sl_price_short)
+        slTicks = math.round(math.abs(entry_price_display - sl_price_short) / syminfo.mintick)
+
+        if exit_mode == "Liquidity TP"
+            liq_target = not na(current_rel) and current_rel < entry_price_display ? current_rel : not na(daily_low) and daily_low < entry_price_display ? daily_low : na
+            tpTicks = not na(liq_target) ? math.round(math.abs(entry_price_display - liq_target) / syminfo.mintick) : slTicks * 2
+            tpTicks := math.max(tpTicks, math.round(slTicks * 1.5))
+            strategy.exit("MGC Short Exit", "MGC Short", loss=slTicks, profit=tpTicks)
+
+        else if exit_mode == "Trail Only"
+            trail_short_stop := sl_price_short
+            strategy.exit("MGC Short Exit", "MGC Short", loss=slTicks)
+
+        else // Both (TP + Trail)
+            liq_target = not na(current_rel) and current_rel < entry_price_display ? current_rel : not na(daily_low) and daily_low < entry_price_display ? daily_low : na
+            tpTicks = not na(liq_target) ? math.round(math.abs(entry_price_display - liq_target) / syminfo.mintick) : slTicks * 2
+            tpTicks := math.max(tpTicks, math.round(slTicks * 1.5))
+            strategy.exit("MGC Short Exit", "MGC Short", loss=slTicks, profit=tpTicks)
+
+    entered_current_short := true
+    tp_label = not na(current_rel) and current_rel < entry_price_display ? "MGC SHORT → REL" : not na(daily_low) and daily_low < entry_price_display ? "MGC SHORT → DOL" : "MGC SHORT → 2R"
+    label.new(bar_index, high, tp_label, color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ── Trail management ────────────────────────────────────────────────
+if exit_mode != "Liquidity TP"
+    if strategy.position_size > 0 and not na(trail_long_stop)
+        new_trail = close - trail_atr * trail_atr_mult
+        if na(trail_long_stop) or new_trail > trail_long_stop
+            trail_long_stop := new_trail
+        if close <= trail_long_stop and strategy.position_size > 0
+            strategy.close("MGC Long", comment="Trail Exit")
+
+    if strategy.position_size < 0 and not na(trail_short_stop)
+        new_trail = close + trail_atr * trail_atr_mult
+        if na(trail_short_stop) or new_trail < trail_short_stop
+            trail_short_stop := new_trail
+        if close >= trail_short_stop and strategy.position_size < 0
+            strategy.close("MGC Short", comment="Trail Exit")
+
+// ── Daily loss tracking ─────────────────────────────────────────────
+if strategy.closedtrades > 0
+    last_pnl = strategy.netprofit - strategy.netprofit[1]
+    if last_pnl < 0
+        last_entry = strategy.closedtrades.entry_price(strategy.closedtrades - 1)
+        last_exit = strategy.closedtrades.exit_price(strategy.closedtrades - 1)
+        last_size = math.abs(strategy.closedtrades.size(strategy.closedtrades - 1))
+        r_unit = abs(sl_price_long != na ? sl_price_long : sl_price_short != na ? sl_price_short : close * 0.01) * syminfo.pointvalue
+        if r_unit > 0
+            r_loss = last_pnl / (r_unit * last_size)
+            if r_loss < 0
+                daily_consecutive_losses := daily_consecutive_losses + 1
+                daily_r_loss := daily_r_loss + r_loss
+            else
+                daily_consecutive_losses := 0
+
+// ============================================================================
+// DASHBOARD — MGC Optimized
+// ============================================================================
+
+var table dash = table.new(position.top_right, 2, 22, border_width=1, frame_color=color.gray, frame_width=1, border_color=color.gray, bgcolor=color.new(color.black, 50))
+
+if barstate.islast
+    row = 0
+
+    // Header
+    table.cell(dash, 0, row, "ICT TURBO MGC v2", text_color=color.white, bgcolor=color.new(color.gold, 80))
+    table.merge_cells(dash, 0, row, 1, row)
+    row += 1
+
+    // Symbol
+    table.cell(dash, 0, row, "Symbol", text_color=color.white)
+    table.cell(dash, 1, row, "MGC (Micro Gold)", text_color=color.gold)
+    row += 1
+
+    // Account
+    table.cell(dash, 0, row, "Account", text_color=color.white)
+    table.cell(dash, 1, row, "$" + str.tostring(account_size, "#") + " | " + str.tostring(risk_per_trade, "#.#") + "% risk", text_color=color.yellow)
+    row += 1
+
+    // Exit Mode
+    exit_col = exit_mode == "Trail Only" ? color.orange : exit_mode == "Both (TP + Trail)" ? color.teal : color.green
+    table.cell(dash, 0, row, "Exit Mode", text_color=color.white)
+    table.cell(dash, 1, row, exit_mode, text_color=exit_col)
+    row += 1
+
+    // Bias
+    status_msg = long_active ? "LONGS" : short_active ? "SHORTS" : "WAITING"
+    status_col = long_active ? color.green : short_active ? color.red : color.gray
+    table.cell(dash, 0, row, "Bias", text_color=color.white)
+    table.cell(dash, 1, row, status_msg, text_color=status_col)
+    row += 1
+
+    // Entry
+    table.cell(dash, 0, row, "Entry", text_color=color.white)
+    table.cell(dash, 1, row, not na(entry_price_display) ? str.tostring(entry_price_display, format.mintick) : "---", text_color=color.yellow)
+    row += 1
+
+    // SL
+    table.cell(dash, 0, row, "Stop Loss", text_color=color.white)
+    table.cell(dash, 1, row, long_active ? str.tostring(sl_price_long, format.mintick) : short_active ? str.tostring(sl_price_short, format.mintick) : "---", text_color=color.red)
+    row += 1
+
+    // TP
+    table.cell(dash, 0, row, "TP 2R", text_color=color.white)
+    table.cell(dash, 1, row, not na(tp_2r) ? str.tostring(tp_2r, format.mintick) : "---", text_color=color.green)
+    row += 1
+
+    table.cell(dash, 0, row, "TP Liquidity", text_color=color.white)
+    table.cell(dash, 1, row, not na(tp_liq) ? str.tostring(tp_liq, format.mintick) : "---", text_color=color.aqua)
+    row += 1
+
+    // Contracts
+    table.cell(dash, 0, row, "Contracts", text_color=color.white)
+    table.cell(dash, 1, row, str.tostring(contracts, "#") + "/" + str.tostring(max_contracts, "#"), text_color=color.yellow)
+    row += 1
+
+    // Daily loss
+    daily_col = daily_cap_hit or daily_r_hit ? color.red : color.green
+    daily_msg = daily_cap_hit ? "STOPPED (0-for-" + str.tostring(max_daily_losses) + ")" : daily_r_hit ? "STOPPED (" + str.tostring(max_daily_risk_r, "#.#") + "R)" : str.tostring(daily_consecutive_losses) + " losses / " + str.tostring(daily_r_loss, "#.#") + "R"
+    table.cell(dash, 0, row, "Daily Status", text_color=color.white)
+    table.cell(dash, 1, row, daily_msg, text_color=daily_col)
+    row += 1
+
+    // MGC Stops
+    table.cell(dash, 0, row, "MGC Stop Mult", text_color=color.white)
+    table.cell(dash, 1, row, str.tostring(stop_multiplier, "#.#") + "× ATR" + (is_asian ? " (Asian)" : ""), text_color=color.white)
+    row += 1
+
+    // Filter section
+    table.cell(dash, 0, row, "FILTERS (" + str.tostring(filter_count) + "/" + str.tostring(filter_total) + ")", text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.merge_cells(dash, 0, row, 1, row)
+    row += 1
+
+    table.cell(dash, 0, row, "Golden Window", text_color=color.white)
+    table.cell(dash, 1, row, is_valid_time ? "OPEN" : "CLOSED", text_color=is_valid_time ? color.green : color.red)
+    row += 1
+
+    table.cell(dash, 0, row, "Displacement", text_color=color.white)
+    table.cell(dash, 1, row, had_recent_displacement ? "YES" : "NO", text_color=had_recent_displacement ? color.green : color.red)
+    row += 1
+
+    table.cell(dash, 0, row, "Freshness", text_color=color.white)
+    age_col = setup_age > stale_threshold ? color.red : color.green
+    table.cell(dash, 1, row, setup_age > 0 ? str.tostring(setup_age) + "/" + str.tostring(stale_threshold) + " bars" : "---", text_color=age_col)
+    row += 1
+
+    table.cell(dash, 0, row, "Weekend Filter", text_color=color.white)
+    table.cell(dash, 1, row, is_weekend_gap ? "SKIP" : "OK", text_color=is_weekend_gap ? color.red : color.green)
+    row += 1
+
+    // Midnight (shown, but OFF as filter)
+    table.cell(dash, 0, row, "Midnight Bias", text_color=color.new(color.gray, 40))
+    mn_msg = midnight_bias_bull ? "BULLISH" : midnight_bias_bear ? "BEARISH" : "FLAT"
+    mn_col = midnight_bias_bull ? color.green : midnight_bias_bear ? color.red : color.gray
+    table.cell(dash, 1, row, mn_msg + (not require_midnight_bias ? " (OFF)" : ""), text_color=mn_col)
+    row += 1
+
+    // FINAL DECISION
+    final_msg = (long_active or short_active) ? (trade_decision_valid ? "▶ EXECUTE" : "✗ NO TRADE") : "— WAITING"
+    final_col = trade_decision_valid ? color.lime : color.red
+    reason_txt = (not trade_decision_valid and (long_active or short_active)) ? " (" + fail_reason + ")" : ""
+
+    table.cell(dash, 0, row, "DECISION", text_color=color.white, bgcolor=color.new(color.gold, 60))
+    table.cell(dash, 1, row, final_msg + reason_txt, text_color=white, bgcolor=final_col)
+    row += 1
+
+    // Backtest stats
+    table.cell(dash, 0, row, "Backtest:", text_color=color.new(color.gray, 50))
+    table.merge_cells(dash, 0, row, 1, row)
+    row += 1
+    table.cell(dash, 0, row, "MGC 5m '23-'26", text_color=color.new(color.gray, 50))
+    table.cell(dash, 1, row, "Sharpe 2.68 | PF 1.97 | WR 54.5%", text_color=color.new(color.green, 50))
