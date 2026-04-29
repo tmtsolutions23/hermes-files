@@ -30,9 +30,16 @@ skipWeekendGaps = input.bool(true, "Skip Sunday/Monday Gap Noise", group="Sessio
 
 requireDisplacement = input.bool(true, "Require Displacement", group="Filters")
 requireFreshness    = input.bool(true, "Require Setup Freshness", group="Filters")
-displacementMult    = input.float(0.5, "Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Filters")
+displacementMult    = input.float(0.5, "Base Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Filters")
 freshBars           = input.int(20, "Max Setup Age (bars)", minval=5, maxval=100, group="Filters")
 minFvgPct           = input.float(0.05, "Min FVG Size %", minval=0.01, maxval=1.0, step=0.01, group="Filters")
+strictLongs         = input.bool(true, "Strict Long Filters", group="Filters")
+strictShorts        = input.bool(false, "Strict Short Filters", group="Filters")
+longDisplacementMult  = input.float(0.8, "Long Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Filters")
+shortDisplacementMult = input.float(0.5, "Short Displacement ATR Multiplier", minval=0.1, maxval=3.0, step=0.1, group="Filters")
+useHtfBiasFilter    = input.bool(true, "Use HTF Bias Filter", group="Filters")
+useVwapFilter       = input.bool(true, "Use Session VWAP Filter", group="Filters")
+requireTrendCandle  = input.bool(true, "Require Trend Candle Confirmation", group="Filters")
 
 atrLen         = input.int(14, "ATR Length", minval=5, maxval=50, group="Trade Plan")
 stopMultNormal = input.float(2.0, "ATR Stop Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Trade Plan")
@@ -64,7 +71,16 @@ bgcolor(showBg and activeWindow ? color.new(goldColor, 90) : na, title="MGC Nigh
 atrVal = ta.atr(atrLen)
 bodySize = math.abs(close - open)
 displacementNow = bodySize > atrVal * displacementMult
+longImpulseNow = bodySize > atrVal * longDisplacementMult and close > open
+shortImpulseNow = bodySize > atrVal * shortDisplacementMult and close < open
 hadRecentDisplacement = displacementNow or displacementNow[1] or displacementNow[2] or displacementNow[3] or displacementNow[4]
+hadRecentLongImpulse = longImpulseNow or longImpulseNow[1] or longImpulseNow[2] or longImpulseNow[3] or longImpulseNow[4]
+hadRecentShortImpulse = shortImpulseNow or shortImpulseNow[1] or shortImpulseNow[2] or shortImpulseNow[3] or shortImpulseNow[4]
+
+htfEmaFast = request.security(syminfo.tickerid, "60", ta.ema(close, 20)[1], lookahead=barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, "60", ta.ema(close, 50)[1], lookahead=barmerge.lookahead_off)
+htfBias = htfEmaFast > htfEmaSlow ? 1 : htfEmaFast < htfEmaSlow ? -1 : 0
+sessionVwap = ta.vwap(hlc3)
 
 minGapSize = ((high + low) / 2.0) * (minFvgPct / 100.0)
 bullishFvg = low > high[2] and (low - high[2]) > minGapSize and (not requireDisplacement or displacementNow[1])
@@ -183,8 +199,13 @@ shortContractsRaw = shortActive and shortRiskPts > 0 ? math.floor(allowedLoss / 
 longContracts = longActive ? math.max(minContracts, math.min(int(longContractsRaw), maxContracts)) : 0
 shortContracts = shortActive ? math.max(minContracts, math.min(int(shortContractsRaw), maxContracts)) : 0
 
-longFiltersOk = isFiveMinute and activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and (not requireFreshness or longAge <= freshBars)
-shortFiltersOk = isFiveMinute and activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and (not requireFreshness or shortAge <= freshBars)
+longFreshOk = not requireFreshness or longAge <= freshBars
+shortFreshOk = not requireFreshness or shortAge <= freshBars
+longDirectionalOk = (not strictLongs or hadRecentLongImpulse) and (not useHtfBiasFilter or htfBias > 0) and (not useVwapFilter or close >= sessionVwap) and (not requireTrendCandle or close > open)
+shortDirectionalOk = (not strictShorts or hadRecentShortImpulse) and (not useHtfBiasFilter or htfBias < 0) and (not useVwapFilter or close <= sessionVwap) and (not requireTrendCandle or close < open)
+
+longFiltersOk = isFiveMinute and activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and longFreshOk and longDirectionalOk
+shortFiltersOk = isFiveMinute and activeWindow and not isWeekendGap and (not requireDisplacement or hadRecentDisplacement) and shortFreshOk and shortDirectionalOk
 
 longSignal = longRetest and longFiltersOk and allowLongs and strategy.position_size <= 0 and longContracts > 0
 shortSignal = shortRetest and shortFiltersOk and allowShorts and strategy.position_size >= 0 and shortContracts > 0
@@ -216,8 +237,8 @@ alertcondition(shortSignal, title="MGC Strategy Short Entry", message="MGC Eveni
 alertcondition(justExitedLong, title="MGC Strategy Long Exit", message="MGC Evening Strategy LONG exit")
 alertcondition(justExitedShort, title="MGC Strategy Short Exit", message="MGC Evening Strategy SHORT exit")
 
-longMsg = "MGC STRATEGY LONG | Entry=" + str.tostring(longEntry, format.mintick) + " | Stop=" + str.tostring(longStop, format.mintick) + " | TP=" + str.tostring(longTp, format.mintick) + " | Qty=" + str.tostring(longContracts)
-shortMsg = "MGC STRATEGY SHORT | Entry=" + str.tostring(shortEntry, format.mintick) + " | Stop=" + str.tostring(shortStop, format.mintick) + " | TP=" + str.tostring(shortTp, format.mintick) + " | Qty=" + str.tostring(shortContracts)
+longMsg = "MGC STRATEGY LONG | Entry=" + str.tostring(longEntry, format.mintick) + " | Stop=" + str.tostring(longStop, format.mintick) + " | TP=" + str.tostring(longTp, format.mintick) + " | Qty=" + str.tostring(longContracts) + " | HTF=" + (htfBias > 0 ? "BULL" : htfBias < 0 ? "BEAR" : "NEUTRAL") + " | VWAP=" + str.tostring(sessionVwap, format.mintick)
+shortMsg = "MGC STRATEGY SHORT | Entry=" + str.tostring(shortEntry, format.mintick) + " | Stop=" + str.tostring(shortStop, format.mintick) + " | TP=" + str.tostring(shortTp, format.mintick) + " | Qty=" + str.tostring(shortContracts) + " | HTF=" + (htfBias > 0 ? "BULL" : htfBias < 0 ? "BEAR" : "NEUTRAL") + " | VWAP=" + str.tostring(sessionVwap, format.mintick)
 if longSignal
     alert(longMsg, alert.freq_once_per_bar_close)
 if shortSignal
@@ -233,9 +254,9 @@ if shortSignal
     activeShortBar := na
 
 // ── Dashboard ────────────────────────────────────────────────────────
-var table dash = table.new(position.top_right, 2, 13, bgcolor=color.new(color.black, 25), border_width=1)
+var table dash = table.new(position.top_right, 2, 17, bgcolor=color.new(color.black, 25), border_width=1)
 if showDashboard and barstate.islast
-    table.cell(dash, 0, 0, "MGC EVENING IFVG STRAT", text_color=color.white, bgcolor=color.new(goldColor, 75))
+    table.cell(dash, 0, 0, "MGC EVENING IFVG STRAT V2", text_color=color.white, bgcolor=color.new(goldColor, 75))
     table.cell(dash, 1, 0, sessionMode, text_color=color.black, bgcolor=color.new(goldColor, 25))
 
     biasText = strategy.position_size > 0 ? "IN LONG" : strategy.position_size < 0 ? "IN SHORT" : longActive ? "LONG SETUP" : shortActive ? "SHORT SETUP" : "WAIT"
@@ -246,34 +267,46 @@ if showDashboard and barstate.islast
     table.cell(dash, 0, 2, "Window", text_color=color.white)
     table.cell(dash, 1, 2, activeWindow ? "ACTIVE" : "OUTSIDE", text_color=activeWindow ? color.lime : color.orange)
 
-    table.cell(dash, 0, 3, "Trigger", text_color=color.white)
-    table.cell(dash, 1, 3, longActive ? str.tostring(longEntry, format.mintick) : shortActive ? str.tostring(shortEntry, format.mintick) : "---", text_color=color.yellow)
+    table.cell(dash, 0, 3, "Directions", text_color=color.white)
+    table.cell(dash, 1, 3, (allowLongs ? "L ON" : "L OFF") + " / " + (allowShorts ? "S ON" : "S OFF"), text_color=color.white)
 
-    table.cell(dash, 0, 4, "Stop", text_color=color.white)
-    table.cell(dash, 1, 4, longActive ? str.tostring(longStop, format.mintick) : shortActive ? str.tostring(shortStop, format.mintick) : "---", text_color=color.red)
+    table.cell(dash, 0, 4, "HTF Bias", text_color=color.white)
+    table.cell(dash, 1, 4, htfBias > 0 ? "BULL" : htfBias < 0 ? "BEAR" : "NEUTRAL", text_color=htfBias > 0 ? color.lime : htfBias < 0 ? color.fuchsia : color.gray)
 
-    table.cell(dash, 0, 5, "TP", text_color=color.white)
-    table.cell(dash, 1, 5, longActive ? str.tostring(longTp, format.mintick) : shortActive ? str.tostring(shortTp, format.mintick) : "---", text_color=color.aqua)
+    table.cell(dash, 0, 5, "VWAP", text_color=color.white)
+    table.cell(dash, 1, 5, str.tostring(sessionVwap, format.mintick), text_color=color.aqua)
 
-    table.cell(dash, 0, 6, "Contracts", text_color=color.white)
-    table.cell(dash, 1, 6, longActive ? str.tostring(longContracts) : shortActive ? str.tostring(shortContracts) : "0", text_color=color.yellow)
+    table.cell(dash, 0, 6, "Trigger", text_color=color.white)
+    table.cell(dash, 1, 6, longActive ? str.tostring(longEntry, format.mintick) : shortActive ? str.tostring(shortEntry, format.mintick) : "---", text_color=color.yellow)
 
-    table.cell(dash, 0, 7, "Risk $", text_color=color.white)
+    table.cell(dash, 0, 7, "Stop", text_color=color.white)
+    table.cell(dash, 1, 7, longActive ? str.tostring(longStop, format.mintick) : shortActive ? str.tostring(shortStop, format.mintick) : "---", text_color=color.red)
+
+    table.cell(dash, 0, 8, "TP", text_color=color.white)
+    table.cell(dash, 1, 8, longActive ? str.tostring(longTp, format.mintick) : shortActive ? str.tostring(shortTp, format.mintick) : "---", text_color=color.aqua)
+
+    table.cell(dash, 0, 9, "Contracts", text_color=color.white)
+    table.cell(dash, 1, 9, longActive ? str.tostring(longContracts) : shortActive ? str.tostring(shortContracts) : "0", text_color=color.yellow)
+
+    table.cell(dash, 0, 10, "Risk $", text_color=color.white)
     riskDollars = longActive ? longRiskPts * pointVal * longContracts : shortActive ? shortRiskPts * pointVal * shortContracts : na
-    table.cell(dash, 1, 7, not na(riskDollars) ? str.tostring(riskDollars, "#.##") : "---", text_color=color.orange)
+    table.cell(dash, 1, 10, not na(riskDollars) ? str.tostring(riskDollars, "#.##") : "---", text_color=color.orange)
 
-    table.cell(dash, 0, 8, "Freshness", text_color=color.white)
+    table.cell(dash, 0, 11, "Freshness", text_color=color.white)
     freshText = longActive ? str.tostring(longAge) + "/" + str.tostring(freshBars) : shortActive ? str.tostring(shortAge) + "/" + str.tostring(freshBars) : "---"
-    table.cell(dash, 1, 8, freshText, text_color=color.white)
+    table.cell(dash, 1, 11, freshText, text_color=color.white)
 
-    table.cell(dash, 0, 9, "Gap Filter", text_color=color.white)
-    table.cell(dash, 1, 9, isWeekendGap ? "BLOCKED" : "CLEAR", text_color=isWeekendGap ? color.red : color.lime)
+    table.cell(dash, 0, 12, "Gap Filter", text_color=color.white)
+    table.cell(dash, 1, 12, isWeekendGap ? "BLOCKED" : "CLEAR", text_color=isWeekendGap ? color.red : color.lime)
 
-    table.cell(dash, 0, 10, "Timeframe", text_color=color.white)
-    table.cell(dash, 1, 10, isFiveMinute ? "5m OK" : "USE 5m", text_color=isFiveMinute ? color.lime : color.red)
+    table.cell(dash, 0, 13, "Directional", text_color=color.white)
+    table.cell(dash, 1, 13, longActive ? (longDirectionalOk ? "LONG OK" : "LONG BLOCKED") : shortActive ? (shortDirectionalOk ? "SHORT OK" : "SHORT BLOCKED") : "WAIT", text_color=longActive ? (longDirectionalOk ? color.lime : color.red) : shortActive ? (shortDirectionalOk ? color.lime : color.red) : color.gray)
 
-    table.cell(dash, 0, 11, "Position", text_color=color.white)
-    table.cell(dash, 1, 11, str.tostring(strategy.position_size), text_color=color.white)
+    table.cell(dash, 0, 14, "Timeframe", text_color=color.white)
+    table.cell(dash, 1, 14, isFiveMinute ? "5m OK" : "USE 5m", text_color=isFiveMinute ? color.lime : color.red)
 
-    table.cell(dash, 0, 12, "Eval Note", text_color=color.white)
-    table.cell(dash, 1, 12, "Backtest aid only; use discretion live", text_color=color.orange)
+    table.cell(dash, 0, 15, "Position", text_color=color.white)
+    table.cell(dash, 1, 15, str.tostring(strategy.position_size), text_color=color.white)
+
+    table.cell(dash, 0, 16, "Eval Note", text_color=color.white)
+    table.cell(dash, 1, 16, "V2 uses asymmetric filters; disable longs if weak", text_color=color.orange)
